@@ -1,1 +1,52 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Atelier — Fragrance Studio</title><link rel="stylesheet" href="styles.css"></head><body><aside class="sidebar"><div class="logo"><b>a.</b><span>atelier<small>FRAGRANCE STUDIO</small></span></div><p class="label">WORKSPACE</p><button class="nav active">◈ &nbsp; Discover</button><button class="nav">▤ &nbsp; Collection</button><button class="nav">✳ &nbsp; Note library</button><p class="label">YOUR STUDIO</p><button class="nav">⌁ &nbsp; Scent journal</button><div class="profile"><b>AD</b><span>Alex Doe<small>Demo workspace</small></span></div></aside><main><header><span>Workspace / <b>Discover</b></span><span class="pill">● SAMPLE DATA</span></header><section class="hero"><div><p class="label">YOUR NEXT SCENT STARTS HERE</p><h1>Find your <i>signature.</i></h1><p class="copy">Explore scent profiles, discover notes, and build a collection that feels like you.</p></div><div class="hero-art"><div class="sun"></div><div class="bottle"><span>ATELIER</span><small>NO. 08</small></div><div class="art-caption">BOTANICAL STUDY · 08</div></div></section><div class="searchrow"><input id="search" placeholder="⌕  Search fragrances, notes, or moods…"><button id="filters">☷ Filters</button></div><div id="filterbar" class="filterbar"><button data-mood="Fresh">Fresh</button><button data-mood="Warm">Warm</button><button data-mood="Floral">Floral</button><button data-mood="Woody">Woody</button><button id="clear">Clear</button></div><section class="heading"><div><p class="label">CURATED FOR YOU</p><h2>Explore fragrances</h2></div><button id="viewall" class="link">View all ↗</button></section><section id="cards" class="cards"></section><section class="bottom"><article class="panel"><p class="label">THE BUILDING BLOCKS</p><h2>Explore by note</h2><div class="notes"><button data-note="Bergamot">Bergamot <small>12</small></button><button data-note="Iris">Iris <small>08</small></button><button data-note="Sandalwood">Sandalwood <small>14</small></button><button data-note="Musk">Musk <small>19</small></button><button data-note="Vanilla">Vanilla <small>11</small></button><button data-note="Vetiver">Vetiver <small>07</small></button></div><p class="muted">Choose a note to find fragrances featuring it.</p></article><article class="panel"><p class="label">YOUR PERSONAL ARCHIVE</p><h2>Scent journal</h2><div id="journal"><b>14 OCT</b><div><strong>Rain on warm stone</strong><p>Mineral air, wet cedar, and a soft amber trail.</p><small>ATMOSPHERIC · WOODY</small></div></div><button id="add" class="add">＋ Add a journal entry</button></article></section><footer>ATELIER / FRAGRANCE STUDIO <span>Independent demo · All records are fictional</span></footer></main><dialog id="modal"><button id="close">×</button><div id="detail"></div></dialog><script src="app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Atelier is a fictional fragrance discovery studio demo.">
+  <title>Atelier — Fragrance Studio</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar" aria-label="Primary navigation">
+    <a class="logo" href="#discover" aria-label="Atelier home"><b>a.</b><span>atelier<small>FRAGRANCE STUDIO</small></span></a>
+    <p class="label">WORKSPACE</p>
+    <button class="nav active" data-view="discover">◈ <span>Discover</span></button>
+    <button class="nav" data-view="collection">▤ <span>Collection</span><em id="saved-count">0</em></button>
+    <button class="nav" data-view="notes">✳ <span>Note library</span></button>
+    <p class="label studio-label">YOUR STUDIO</p>
+    <button class="nav" data-view="journal">⌁ <span>Scent journal</span></button>
+    <div class="profile"><b>AD</b><span>Alex Doe<small>Demo workspace</small></span></div>
+  </aside>
+
+  <main id="discover">
+    <header><span>Workspace / <b id="breadcrumb">Discover</b></span><span class="pill">● SAMPLE DATA</span></header>
+    <section class="hero" aria-labelledby="page-title">
+      <div><p class="label">YOUR NEXT SCENT STARTS HERE</p><h1 id="page-title">Find your <i>signature.</i></h1><p class="copy">Explore scent profiles, discover notes, and build a collection that feels like you.</p></div>
+      <div class="hero-art" aria-label="Abstract botanical illustration"><div class="sun"></div><div class="bottle"><span>ATELIER</span><small>NO. 08</small></div><div class="art-caption">BOTANICAL STUDY · 08</div></div>
+    </section>
+
+    <section class="discovery" aria-label="Fragrance discovery">
+      <div class="searchrow"><label class="sr-only" for="search">Search fragrances</label><span class="search-icon">⌕</span><input id="search" type="search" autocomplete="off" placeholder="Search fragrances, brands, notes, or moods…"><button id="filters" class="outline-button" type="button" aria-expanded="false" aria-controls="filterbar">☷ <span>Filters</span></button></div>
+      <div id="filterbar" class="filterbar" aria-label="Fragrance filters">
+        <div class="filter-group"><span class="filter-label">Mood</span><button data-mood="Fresh">Fresh</button><button data-mood="Warm">Warm</button><button data-mood="Floral">Floral</button><button data-mood="Woody">Woody</button></div>
+        <label class="family-filter">Family <select id="family"><option value="">All families</option><option>Fresh</option><option>Citrus</option><option>Amber</option><option>Floral</option><option>Woody</option><option>Woody Amber</option></select></label>
+        <button id="clear" class="clear-button" type="button">Clear all</button>
+      </div>
+      <div class="heading"><div><p class="label">CURATED FOR YOU</p><h2 id="results-title">Explore fragrances</h2></div><button id="viewall" class="link" type="button">View all ↗</button></div>
+      <div id="cards" class="cards" aria-live="polite"></div>
+    </section>
+
+    <section class="bottom" id="studio-tools">
+      <article class="panel" id="note-panel"><p class="label">THE BUILDING BLOCKS</p><h2>Explore by note</h2><div class="notes"><button data-note="Bergamot">Bergamot <small>12</small></button><button data-note="Iris">Iris <small>08</small></button><button data-note="Sandalwood">Sandalwood <small>14</small></button><button data-note="Musk">Musk <small>19</small></button><button data-note="Vanilla">Vanilla <small>11</small></button><button data-note="Vetiver">Vetiver <small>07</small></button></div><p class="muted">Choose a note to find fragrances featuring it.</p></article>
+      <article class="panel" id="journal-panel"><div class="panel-heading"><div><p class="label">YOUR PERSONAL ARCHIVE</p><h2>Scent journal</h2></div><span id="journal-count" class="count">1 entry</span></div><div id="journal"></div><button id="add" class="add" type="button">＋ Add a journal entry</button></article>
+    </section>
+    <footer>ATELIER / FRAGRANCE STUDIO <span>Independent demo · All records are fictional</span></footer>
+  </main>
+
+  <dialog id="modal" aria-labelledby="detail-title"><button id="close" class="dialog-close" type="button" aria-label="Close fragrance details">×</button><div id="detail"></div></dialog>
+  <dialog id="journal-modal" aria-labelledby="journal-title"><button id="journal-close" class="dialog-close" type="button" aria-label="Close journal form">×</button><p class="label">PERSONAL ARCHIVE</p><h2 id="journal-title">Add a scent memory</h2><form id="journal-form"><label for="entry-title">Title<input id="entry-title" required maxlength="60" placeholder="e.g. A garden after rain"></label><label for="entry-description">What did it evoke?<textarea id="entry-description" maxlength="180" rows="4" placeholder="Mineral air, crushed leaves…"></textarea></label><div class="form-actions"><button type="button" class="text-button" id="journal-cancel">Cancel</button><button class="primary-button" type="submit">Save entry</button></div></form></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
