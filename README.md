@@ -1,44 +1,83 @@
-# Atelier — Fragrance Studio Demo
+# Atelier — Scent Lab
 
-Atelier is a polished, responsive fragrance-discovery dashboard built with vanilla HTML, CSS, and JavaScript. It is intentionally lightweight: there is no build step, backend, account system, external API, or dependency to install.
+Atelier is a standalone, production-minded scent journal and perfume experiment tracker for documenting sensory observations, formula revisions, experimental batches, dilution calculations, and comparisons over time. It is an independent clean-room project with synthetic seed data only.
+
+## Implemented workflow
+
+The core workflow is functional in the browser:
+
+1. Create, edit, duplicate, search, and filter journal entries.
+2. Create an experiment with an ID, objective, and workflow status.
+3. Add formula revisions without overwriting earlier revisions.
+4. Calculate a stock-to-target dilution with an explicit mass or volume basis.
+5. Record actual batch additions, lot references, and procedure notes.
+6. Add sensory evaluations with intervals, conditions, descriptors, and optional measured-result notes.
+7. Compare two formula revisions side by side.
+8. Export the complete local record as a JSON backup.
 
 ## Features
 
-- Search across fictional fragrance names, brands, families, moods, and notes.
-- Filter by mood and scent family, with a clear-all action.
-- Browse featured fragrances or expand to the full sample catalogue.
-- Open accessible fragrance detail dialogs from cards or keyboard controls.
-- Save and remove fragrances from a personal collection; saved items persist in local browser storage.
-- Explore note shortcuts for Bergamot, Iris, Sandalwood, Musk, Vanilla, and Vetiver.
-- Add multiple scent-journal entries through a keyboard-friendly form; entries persist locally.
-- Responsive desktop, tablet, and mobile layouts with useful empty states and visible sample-data labelling.
-- Navigation controls connect to the discover, collection, note library, and journal sections of the demo.
+- Journal records for opening, heart, dry-down, overall impression, purpose, hypothesis, descriptors, intensity, longevity, projection, evaluation time, medium, environment, personal notes, conclusions, and next steps.
+- Experiment workflow statuses: Draft, Mixed, Maturing, Evaluated, and Archived. These are workflow labels, not scientific validation claims.
+- Immutable formula revision history with `supersedesRevisionId` links.
+- Material and lot ledger with optional supplier, product/reference, acquisition date, purity, stock concentration, solvent, storage notes, and safety-reference fields.
+- Batch traceability: every batch references an experiment and exact formula revision, while actual additions retain material and lot IDs.
+- Sensory timeline records for multiple intervals after mixing and a comparison view that keeps subjective impressions separate from measured-result text.
+- Keyboard-friendly dialogs, readable tables, responsive mobile layouts, empty states, sample-data warnings, and local JSON export.
 
-## Run locally
+## Architecture and data model
 
-Open `index.html` directly in a modern browser, or serve the folder locally:
+The app is a dependency-free ES module application:
+
+```text
+index.html                  Application screens and accessible dialogs
+styles.css                  Sage & Ivory responsive laboratory UI
+app.js                      UI orchestration and browser event handlers
+src/domain/types.js         JSDoc domain models (editor/type tooling friendly)
+src/domain/calculations.mjs Pure calculation and unit-validation logic
+src/domain/store.mjs        Normalized state, relationship helpers, persistence
+tests/calculations.test.mjs Calculation unit tests
+tests/store.test.mjs        Persistence-model and traceability tests
+scripts/                    Lint, type-model, and static build checks
+```
+
+The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+
+## Calculation conventions
+
+Concentrations are percentages from 0 to 100. The stock-to-target dilution uses:
+
+```text
+stock amount = final amount × target concentration ÷ stock concentration
+```
+
+The diluent is treated as 0%. The calculator requires the target to be no greater than the known stock concentration. Mass units (`mg`, `g`, `kg`) and volume units (`mL`, `L`) are kept separate. Same-family conversion is allowed; mass ↔ volume conversion requires an explicit positive density in g/mL. Grams and millilitres are never silently treated as interchangeable. Calculated values are shown separately from measured additions and are not analytical laboratory measurements.
+
+## Setup and commands
+
+Requires Node.js 18+ and Python is not required.
+
+```bash
+npm run check       # lint parse check, domain-model check, tests, and build
+npm test            # unit and data-model tests
+npm run lint        # syntax-oriented module parse check
+npm run typecheck   # verifies the documented JSDoc domain model surface
+npm run build       # creates the static dist/ bundle
+```
+
+Serve the repository (or `dist/`) from a local HTTP server because ES modules are blocked by some browsers when opened directly from `file://`:
 
 ```bash
 python -m http.server 8000
 ```
 
-Then visit <http://localhost:8000>. A local server is recommended because browser storage and dialog behavior are more consistent from an origin than from a `file://` URL.
+Open <http://localhost:8000>. Use the sidebar to move through Journal, Experiments, Materials, Dilution lab, Compare, and Export.
 
-## Project structure
+## Limitations and safety
 
-```text
-index.html   Semantic page structure, navigation, cards, dialogs, and forms
-styles.css   Sage & Ivory visual system, responsive layout, and component states
-app.js       Fictional catalogue, filtering, collection state, dialogs, and journal state
-README.md    Setup, feature, structure, and limitation notes
-LICENSE      MIT license
-```
+This is a local front-end application, not a multi-user server. It has no authentication, database server, file-upload backend, user access control, cloud sync, or real chemical inventory. Attachments are represented by references in the data model but the UI does not upload files. No supplier information, chemical property, safety classification, density, purity, or analytical result is invented; unknown fields remain blank. Users are responsible for their own material handling and safety procedures.
 
-## Limitations
-
-This is a front-end demo only. All fragrance names, brands, descriptions, notes, ratings, and journal content are fictional sample data. Saved fragrances and journal entries use `localStorage` in the current browser and are not synced between devices or users. There is no real product catalogue, authentication, checkout, analytics, or API integration.
-
-The project is independent of Ravenn and contains no proprietary source code, real product data, credentials, API keys, or private assets.
+All seed names, records, ratings, materials, lots, and sensory notes are fictional. The project contains no private application source, credentials, API keys, proprietary research, or personal data.
 
 ## License
 
