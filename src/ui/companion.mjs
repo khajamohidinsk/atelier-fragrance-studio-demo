@@ -1,5 +1,5 @@
 import { addCompanionEntry, deleteCompanionEntry, updateCompanionEntry } from '../domain/store.mjs';
-import { normalizeChatHistory } from '../domain/chat-history.mjs';
+import { normalizeChatHistory, prepareChatRequest } from '../domain/chat-history.mjs';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 
@@ -202,12 +202,13 @@ export function initScentCompanion({ getState, persist, toast, materialNames = [
     addChatMessage('user', message);
     // The current message is sent in the dedicated "message" field, not also in history.
     // Only successful prior turns are kept as model context.
-    const priorHistory = normalizeChatHistory(state.chatHistory, 8);
+    const chatRequest = prepareChatRequest(message, state.chatHistory, 8);
+    const priorHistory = chatRequest.history;
     input.value = '';
     send.disabled = true;
     statusNode.textContent = 'Thinking with the configured language model…';
     try {
-      const result = await requestAi('chat', { message, history: priorHistory, context: { materialName: fields('materialName').value.trim(), evaluationType: fields('evaluationType').value, observation: fields('observationText').value.trim() } });
+      const result = await requestAi('chat', { ...chatRequest, context: { materialName: fields('materialName').value.trim(), evaluationType: fields('evaluationType').value, observation: fields('observationText').value.trim() } });
       const answer = result.answer || result.clarifyingQuestion || 'I need a little more detail before I can help.';
       addChatMessage('assistant', answer, result.intent || 'companion');
       state.chatHistory = normalizeChatHistory([
