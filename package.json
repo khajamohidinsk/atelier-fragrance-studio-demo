@@ -8,6 +8,7 @@
     "lint": "node scripts/lint.mjs",
     "typecheck": "node scripts/typecheck.mjs",
     "build": "node scripts/build.mjs",
+    "start": "node server.cjs",
     "check": "npm run lint && npm run typecheck && npm test && npm run build"
   }
 }

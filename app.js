@@ -1,14 +1,18 @@
 import { calculateDilution } from './src/domain/calculations.mjs';
-import { addBatch, addEvaluation, addExperiment, addJournalEntry, addRevision, batchSummary, loadState, saveState } from './src/domain/store.mjs';
+import { addBatch, addEvaluation, addExperiment, addJournalEntry, addRevision, batchSummary, importLegacyCompanionEntries, loadState, saveState } from './src/domain/store.mjs';
+import { initScentCompanion } from './src/ui/companion.mjs';
 
 const $ = selector => document.querySelector(selector);
 let state = loadState();
+const legacyCompanion = importLegacyCompanionEntries(state);
+if (legacyCompanion.imported) { state = legacyCompanion.state; saveState(state); }
 let currentScreen = 'journal';
+let companionApi;
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const formatDate = value => value ? new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value)) : 'Date not recorded';
 const toast = message => { const node = $('#toast'); node.textContent = message; node.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => node.classList.remove('show'), 2200); };
-const persist = next => { state = next; saveState(state); renderAll(); };
+const persist = next => { state = next; saveState(state); renderAll(); companionApi?.render(); };
 function openDialog(id) { $( `#${id}`).showModal(); }
 function closeDialog(id) { $( `#${id}`).close(); }
 function tags(value) { return String(value || '').split(',').map(item => item.trim()).filter(Boolean); }
@@ -41,7 +45,7 @@ function renderCompare() {
   $('#comparison').innerHTML = [first, second].map(revision => { const experiment = getExperiment(revision.experimentId); return `<article class="comparison-card"><p class="label">REVISION ${revision.revision} · ${esc(experiment?.experimentId || '')}</p><h2>${esc(experiment?.title || 'Untitled experiment')}</h2><p>${esc(revision.notes || 'No revision notes recorded.')}</p><h3>INGREDIENTS</h3>${revision.ingredients?.length ? `<div class="chips">${revision.ingredients.map(item => `<span class="chip">${esc(item.materialName || item.materialId)} · ${esc(item.quantity)} ${esc(item.unit)}</span>`).join('')}</div>` : '<p>No ingredients recorded.</p>'}<h3>LINKED OBSERVATIONS</h3><p>${experiment?.journalEntryIds?.length || 0} journal entries · ${experiment?.evaluationIds?.length || 0} evaluations</p></article>`; }).join('') + '<div class="compare-note">A changed score or descriptor is a recorded difference, not proof that one formula caused it. Compare conditions and evaluation intervals before drawing conclusions.</div>';
 }
 
-function renderAll() { $('#stat-journal').textContent = state.journalEntries.length; $('#stat-experiments').textContent = state.experiments.filter(item => item.status !== 'Archived').length; $('#stat-maturing').textContent = state.experiments.filter(item => item.status === 'Maturing').length; $('#stat-evaluations').textContent = state.evaluations.length; renderJournal(); renderExperiments(); renderMaterials(); renderCompare(); }
+function renderAll() { $('#stat-journal').textContent = state.journalEntries.length; $('#stat-experiments').textContent = state.experiments.filter(item => item.status !== 'Archived').length; $('#stat-maturing').textContent = state.experiments.filter(item => item.status === 'Maturing').length; $('#stat-evaluations').textContent = state.evaluations.length; renderJournal(); renderExperiments(); renderMaterials(); renderCompare(); companionApi?.render(); }
 
 function journalFormValues(form) { const values = Object.fromEntries(new FormData(form)); return { title: values.title, observedAt: new Date(`${values.observedAt}T12:00:00`).toISOString(), experimentId: values.experimentId || undefined, medium: values.medium, evaluationTimeMinutes: values.evaluationTimeMinutes ? Number(values.evaluationTimeMinutes) : undefined, purpose: values.purpose, hypothesis: values.purpose, opening: values.opening, heart: values.heart, dryDown: values.dryDown, overall: values.dryDown, descriptors: tags(values.descriptors), tags: tags(values.tags), intensity: values.intensity ? Number(values.intensity) : undefined, projection: values.projection ? Number(values.projection) : undefined, personalNotes: values.personalNotes, attachmentRefs: [] }; }
 function showJournalForm(entry = null) { const form = $('#journal-form'); form.reset(); form.dataset.editId = entry?.id || ''; form.elements.experimentId.innerHTML = '<option value="">Not linked</option>' + state.experiments.map(item => `<option value="${esc(item.id)}">${esc(item.experimentId)} · ${esc(item.title)}</option>`).join(''); form.elements.observedAt.value = entry?.observedAt?.slice(0, 10) || today(); if (entry) for (const key of ['title', 'medium', 'purpose', 'opening', 'heart', 'dryDown', 'personalNotes', 'experimentId']) if (entry[key] != null && form.elements[key]) form.elements[key].value = entry[key]; form.elements.descriptors.value = entry?.descriptors?.join(', ') || ''; form.elements.tags.value = entry?.tags?.join(', ') || ''; form.elements.evaluationTimeMinutes.value = entry?.evaluationTimeMinutes || ''; form.elements.intensity.value = entry?.intensity || ''; form.elements.projection.value = entry?.projection || ''; $('#journal-dialog h2').textContent = entry ? 'Edit journal entry' : 'New journal entry'; openDialog('journal-dialog'); }
@@ -67,6 +71,7 @@ document.addEventListener('click', event => {
   if (type === 'new-evaluation') showEvaluationForm(action.dataset.id);
   if (type === 'back-experiment') showExperimentDetail(action.dataset.id);
 });
+window.addEventListener('storage', event => { if (event.key === 'atelier-lab-state-v1') { state = loadState(); renderAll(); } });
 $('#experiment-list').addEventListener('click', event => { const card = event.target.closest('[data-experiment-id]'); if (card) showExperimentDetail(card.dataset.experimentId); });
 $('#journal-search').addEventListener('input', renderJournal); $('#journal-filter').addEventListener('change', renderJournal); $('#experiment-search').addEventListener('input', renderExperiments); $('#experiment-status').addEventListener('change', renderExperiments); $('#compare-a').addEventListener('change', renderCompare); $('#compare-b').addEventListener('change', renderCompare);
 
@@ -80,4 +85,5 @@ $('#record-dialog').addEventListener('submit', event => { event.preventDefault()
   } catch (error) { toast(error.message); } });
 $('#export-button').addEventListener('click', () => { const blob = new Blob([JSON.stringify({ ...state, exportedAt: new Date().toISOString() }, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'atelier-scent-lab-backup.json'; anchor.click(); URL.revokeObjectURL(url); toast('Backup exported'); });
 
+companionApi = initScentCompanion({ getState: () => state, persist, toast, materialNames: ['Bergamot', 'Cedarwood', 'Iris', 'Rose', 'Sandalwood', 'Vetiver', 'Musk'] });
 renderAll();

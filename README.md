@@ -14,6 +14,7 @@ The core workflow is functional in the browser:
 6. Add sensory evaluations with intervals, conditions, descriptors, and optional measured-result notes.
 7. Compare two formula revisions side by side.
 8. Export the complete local record as a JSON backup.
+9. Open Scent Companion for editable sensory notes, browser dictation, optional vocabulary guidance, and spoken formulation briefings.
 
 ## Features
 
@@ -36,12 +37,42 @@ app.js                      UI orchestration and browser event handlers
 src/domain/types.js         JSDoc domain models (editor/type tooling friendly)
 src/domain/calculations.mjs Pure calculation and unit-validation logic
 src/domain/store.mjs        Normalized state, relationship helpers, persistence
+src/ui/companion.mjs        Scent Companion editor, speech APIs, AI review flow
+src/ui/companion.css        Namespaced Companion styling
 tests/calculations.test.mjs Calculation unit tests
 tests/store.test.mjs        Persistence-model and traceability tests
 scripts/                    Lint, type-model, and static build checks
 ```
 
-The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, Companion observations, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+
+## Scent Companion
+
+Scent Companion stores observations in `state.companionEntries`. Each record retains `materialName`, `evaluationType`, optional concentration/evaluation method/elapsed time, `originalText`, `correctedText`, `createdAt`, `updatedAt`, input `source` (`typed` or `speech`), and reviewed AI suggestions. The existing legacy key `atelier.scent-companion.v1` is imported once when the main Atelier state has no Companion observations; existing records are not discarded.
+
+The dictation controller uses `SpeechRecognition` or `webkitSpeechRecognition` with `continuous` mode where available. Browser services can still end a session, so the controller flushes final results, preserves accumulated text, restarts only while the user has not pressed Stop, and stops after a bounded ten-minute/24-restart limit. Microphone permission denial, unsupported browsers, no-speech, network, and fatal capture errors leave manual typing available. Raw audio is never stored.
+
+The current persistence boundary is browser-local `localStorage`: it survives reloads in the same browser profile but has no cloud backup and does not synchronize across browser profiles, devices, or users. The pure store operations (`addCompanionEntry`, `updateCompanionEntry`, `deleteCompanionEntry`, and `importLegacyCompanionEntries`) are the adapter surface for a future authenticated Ravenn persistence service.
+
+### Optional AI server
+
+AI assistance is intentionally server-side. Start the included OpenAI-compatible proxy with:
+
+```bash
+npm start
+```
+
+Configure it through server environment variables; never commit a real key:
+
+```text
+PORT=8787
+AI_API_URL=https://provider.example/v1/chat/completions
+AI_API_KEY=server-only-secret
+AI_MODEL=provider-model-name
+AI_TIMEOUT_MS=15000
+```
+
+The browser calls `POST /api/scent-companion/assist` for `vocabulary`, `explain`, or `briefing`. The server validates requests, keeps the API key out of browser code, applies a request limit and timeout, and returns a generic error when configuration or the upstream provider is unavailable. Vocabulary results preserve the user's observation and remain separate until reviewed. Briefings are explicitly intended/predicted from supplied formula information, not physical observations.
 
 ## Calculation conventions
 
