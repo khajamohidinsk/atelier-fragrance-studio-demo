@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeChatHistory } from '../src/domain/chat-history.mjs';
+import { normalizeChatHistory, prepareChatRequest } from '../src/domain/chat-history.mjs';
 
 test('chat history is bounded and contains only role/content strings', () => {
   const history = [
@@ -42,14 +42,17 @@ test('object-form assistant responses are reduced to plain answer text', () => {
   ]), [{ role: 'assistant', content: 'Ask one focused question.' }]);
 });
 
-test('the current message can remain separate from prior history', () => {
-  const prior = normalizeChatHistory([
+test('request keeps current message separate and removes a duplicated trailing user turn', () => {
+  const request = prepareChatRequest('Second question', [
+    { role: 'user', content: 'First question' },
+    { role: 'assistant', content: 'First answer' },
+    { role: 'user', content: 'Second question' }
+  ]);
+  assert.equal(request.message, 'Second question');
+  assert.deepEqual(request.history, [
     { role: 'user', content: 'First question' },
     { role: 'assistant', content: 'First answer' }
   ]);
-  const currentMessage = 'Second question';
-  assert.equal(prior.some(turn => turn.role === 'user' && turn.content === currentMessage), false);
-  assert.equal(currentMessage, 'Second question');
 });
 
 test('history limit keeps only the most recent messages', () => {
@@ -59,4 +62,11 @@ test('history limit keeps only the most recent messages', () => {
   }));
   assert.deepEqual(normalizeChatHistory(history, 8).map(turn => turn.content),
     ['turn 4', 'turn 5', 'turn 6', 'turn 7', 'turn 8', 'turn 9', 'turn 10', 'turn 11']);
+});
+
+test('assistant operational JSON without answer text is excluded from history', () => {
+  assert.deepEqual(normalizeChatHistory([
+    { role: 'assistant', content: JSON.stringify({ ok: true, intent: 'clarify', meta: { provider: 'ollama' } }) },
+    { role: 'assistant', content: 'A useful plain-text answer.' }
+  ]), [{ role: 'assistant', content: 'A useful plain-text answer.' }]);
 });
