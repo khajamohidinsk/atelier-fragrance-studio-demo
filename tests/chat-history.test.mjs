@@ -38,11 +38,20 @@ test('assistant JSON envelopes are reduced to answer text, not replayed as JSON'
 });
 
 test('object-form assistant responses are reduced to plain answer text', () => {
-  assert.deepEqual(normalizeChatHistory([
-    { role: 'assistant', content: { answer: 'Ask one focused question.', intent: 'clarify', meta: { provider: 'ollama' } }
-  ]), [{ role: 'assistant', content: 'Ask one focused question.' }]);
+  assert.deepEqual(
+    normalizeChatHistory([
+      {
+        role: 'assistant',
+        content: {
+          answer: 'Ask one focused question.',
+          intent: 'clarify',
+          meta: { provider: 'ollama' }
+        }
+      }
+    ]),
+    [{ role: 'assistant', content: 'Ask one focused question.' }]
+  );
 });
-
 test('request keeps current message separate and removes a duplicated trailing user turn', () => {
   const request = prepareChatRequest('Second question', [
     { role: 'user', content: 'First question' },
@@ -71,3 +80,4 @@ test('assistant operational JSON without answer text is excluded from history', 
     { role: 'assistant', content: 'A useful plain-text answer.' }
   ]), [{ role: 'assistant', content: 'A useful plain-text answer.' }]);
 });
+
