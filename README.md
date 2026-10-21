@@ -14,6 +14,7 @@ The core workflow is functional in the browser:
 6. Add sensory evaluations with intervals, conditions, descriptors, and optional measured-result notes.
 7. Compare two formula revisions side by side.
 8. Export the complete local record as a JSON backup.
+9. Open Scent Companion for editable sensory notes, browser dictation, optional vocabulary guidance, and spoken formulation briefings.
 
 ## Features
 
@@ -36,12 +37,40 @@ app.js                      UI orchestration and browser event handlers
 src/domain/types.js         JSDoc domain models (editor/type tooling friendly)
 src/domain/calculations.mjs Pure calculation and unit-validation logic
 src/domain/store.mjs        Normalized state, relationship helpers, persistence
+src/ui/companion.mjs        Scent Companion editor, speech APIs, AI review flow
+src/ui/companion.css        Namespaced Companion styling
 tests/calculations.test.mjs Calculation unit tests
 tests/store.test.mjs        Persistence-model and traceability tests
 scripts/                    Lint, type-model, and static build checks
 ```
 
-The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, Companion observations, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+
+## Scent Companion
+
+Scent Companion stores observations in `state.companionEntries`. Each record retains `materialName`, `evaluationType`, optional concentration/evaluation method/elapsed time, `originalText`, `correctedText`, `createdAt`, `updatedAt`, input `source` (`typed` or `speech`), and reviewed AI suggestions. The existing legacy key `atelier.scent-companion.v1` is imported once when the main Atelier state has no Companion observations; existing records are not discarded.
+
+The dictation controller uses `SpeechRecognition` or `webkitSpeechRecognition` with `continuous` mode where available. Browser services can still end a session, so the controller flushes final results, preserves accumulated text, restarts only while the user has not pressed Stop, and stops after a bounded ten-minute/24-restart limit. Microphone permission denial, unsupported browsers, no-speech, network, and fatal capture errors leave manual typing available. Raw audio is never stored.
+
+Briefing playback uses the browser's built-in `speechSynthesis` / `SpeechSynthesisUtterance` APIs. It does not call an AI speech service and does not require an API key. Voice availability, pronunciation, and offline behavior depend on the browser and installed operating-system voices. Listen becomes available after a briefing has been generated; Pause/Resume and Stop control the active utterance.
+
+The current persistence boundary is browser-local `localStorage`: it survives reloads in the same browser profile but has no cloud backup and does not synchronize across browser profiles, devices, or users. The pure store operations (`addCompanionEntry`, `updateCompanionEntry`, `deleteCompanionEntry`, and `importLegacyCompanionEntries`) are the adapter surface for a future authenticated Ravenn persistence service.
+
+### Free local AI with Ollama (no API key)
+
+The server supports Ollama's native local chat endpoint. Install and start Ollama, and ensure the model is available locally. For the current model already used in this project, `qwen2.5-coder:7b`, start the Atelier server in PowerShell like this:
+
+```powershell
+$env:AI_PROVIDER = 'ollama'
+$env:AI_MODEL = 'qwen2.5-coder:7b'
+npm start
+```
+
+Ollama's default endpoint is `http://127.0.0.1:11434/api/chat`. Override it with `AI_API_URL` only if Ollama is listening elsewhere. No `AI_API_KEY` is required for local Ollama. The server's default AI timeout is 120 seconds to allow a local model to respond on CPU; adjust `AI_TIMEOUT_MS` if necessary. Check `GET /api/health` for `aiConfigured`, `aiProvider`, and `aiModel`.
+
+To use a remote OpenAI-compatible provider instead, set `AI_PROVIDER=openai-compatible`, `AI_API_URL`, `AI_API_KEY`, and `AI_MODEL`. Keep remote keys server-side; never commit them. The server does not automatically load a `.env` file, and `.env` is ignored by Git.
+
+The browser calls `POST /api/scent-companion/assist` for `chat`, `vocabulary`, `explain`, or `briefing`. The conversational `chat` action accepts a free-form message plus bounded recent history and asks the model to classify the request, answer it, or ask one clarifying question. The server validates requests and returns a generic error when the local model or upstream provider is unavailable. Vocabulary results preserve the user's observation and remain separate until reviewed. Briefings are explicitly intended/predicted from supplied formula information, not physical observations.
 
 ## Calculation conventions
 
@@ -71,7 +100,7 @@ Serve the repository (or `dist/`) from a local HTTP server because ES modules ar
 python -m http.server 8000
 ```
 
-Open <http://localhost:8000>. Use the sidebar to move through Journal, Experiments, Materials, Dilution lab, Compare, and Export.
+Open <http://localhost:8000>. Use the sidebar to move through Journal, Experiments, Materials, Dilution lab, Compare, and Export. For AI actions, use the Node server on port 8787 and open the app through that server instead.
 
 ## Limitations and safety
 
