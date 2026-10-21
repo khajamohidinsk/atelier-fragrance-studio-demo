@@ -5,10 +5,11 @@ const {URL} = require("node:url");
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT || 8787);
-const AI_API_URL = process.env.AI_API_URL || "";
+const AI_PROVIDER = String(process.env.AI_PROVIDER || "openai-compatible").toLowerCase();
+const AI_API_URL = process.env.AI_API_URL || (AI_PROVIDER === "ollama" ? "http://127.0.0.1:11434/api/chat" : "");
 const AI_API_KEY = process.env.AI_API_KEY || "";
-const AI_MODEL = process.env.AI_MODEL || "";
-const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 15000);
+const AI_MODEL = process.env.AI_MODEL || (AI_PROVIDER === "ollama" ? "qwen2.5-coder:7b" : "");
+const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 120000);
 const MAX_BODY = 64 * 1024;
 
 const mimeTypes = {
@@ -47,26 +48,27 @@ function readJson(request) {
     });
     request.on("end", () => {
       try { resolve(JSON.parse(content || "{}")); }
-      catch (error) { reject(Object.assign(new Error("Invalid JSON"), {code: "INVALID_JSON"})); }
+      catch { reject(Object.assign(new Error("Invalid JSON"), {code: "INVALID_JSON"})); }
     });
     request.on("error", reject);
   });
 }
 
 function configured() {
-  return Boolean(AI_API_URL && AI_API_KEY && AI_MODEL);
+  if (AI_PROVIDER === "ollama") return Boolean(AI_API_URL && AI_MODEL);
+  return AI_PROVIDER === "openai-compatible" && Boolean(AI_API_URL && AI_API_KEY && AI_MODEL);
 }
 
 function cleanJsonText(text) {
-  return String(text || "").replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  return String(text || "").replace(/^\x60\x60\x60(?:json)?\s*/i, "").replace(/\s*\x60\x60\x60$/, "").trim();
 }
 
 function buildPrompt(body) {
   const base = "You are a careful beginner-friendly perfumery assistant. Preserve user observations exactly as observations, distinguish suggestions or intentions from physical trial results, never claim to know exactly what a person smelled, and never invent formula percentages, safety information, measurements, or ingredients not supplied. Return only valid JSON.";
-  if (body.action === "chat") return `${base}\nYou are in a conversational Scent Companion. Decide whether the user's free-form message is asking for a term explanation, observation analysis/vocabulary help, a formulation briefing, or clarification. Return {\"intent\":\"explain\"|\"observation\"|\"briefing\"|\"clarify\"|\"general\",\"answer\":string,\"clarifyingQuestion\":string|null}. If the request is unclear, use intent clarify, keep answer short, and ask one useful question. Use only the supplied message, recent conversation, and optional editor context. Do not silently rewrite or save the user's observation. Message: ${JSON.stringify(body.message || "")} Recent conversation: ${JSON.stringify(body.history || [])} Editor context: ${JSON.stringify(body.context || {})}`;
-  if (body.action === "vocabulary") return `${base}\nReturn {\"preservedObservation\":string,\"suggestions\":[{\"term\":string,\"meaning\":string,\"why\":string}],\"clearerWording\":string}. Offer no more than five optional terms. User observation: ${JSON.stringify(body.observation || {})}`;
-  if (body.action === "explain") return `${base}\nExplain the perfumery term for a beginner. Return {\"term\":string,\"explanation\":string}. Term: ${JSON.stringify(body.term || "")}`;
-  return `${base}\nReturn {\"intendedCharacter\":string,\"roles\":[string],\"opening\":string,\"heart\":string,\"dryDown\":string,\"uncertainties\":[string],\"spokenText\":string}. Only describe opening, heart, or dry-down when the supplied information supports an intended development; otherwise say it is uncertain. Blend description: ${JSON.stringify(body.briefing || "")}`;
+  if (body.action === "chat") return `${base}\nYou are in a conversational Scent Companion. Decide whether the user's free-form message is asking for a term explanation, observation analysis/vocabulary help, a formulation briefing, or clarification. Return {"intent":"explain"|"observation"|"briefing"|"clarify"|"general","answer":string,"clarifyingQuestion":string|null}. If the request is unclear, use intent clarify, keep answer short, and ask one useful question. Use only the supplied message, recent conversation, and optional editor context. Do not silently rewrite or save the user's observation. Message: ${JSON.stringify(body.message || "")} Recent conversation: ${JSON.stringify(body.history || [])} Editor context: ${JSON.stringify(body.context || {})}`;
+  if (body.action === "vocabulary") return `${base}\nReturn {"preservedObservation":string,"suggestions":[{"term":string,"meaning":string,"why":string}],"clearerWording":string}. Offer no more than five optional terms. User observation: ${JSON.stringify(body.observation || {})}`;
+  if (body.action === "explain") return `${base}\nExplain the perfumery term for a beginner. Return {"term":string,"explanation":string}. Term: ${JSON.stringify(body.term || "")}`;
+  return `${base}\nReturn {"intendedCharacter":string,"roles":[string],"opening":string,"heart":string,"dryDown":string,"uncertainties":[string],"spokenText":string}. Only describe opening, heart, or dry-down when the supplied information supports an intended development; otherwise say it is uncertain. Blend description: ${JSON.stringify(body.briefing || "")}`;
 }
 
 function validateRequest(body) {
@@ -82,18 +84,34 @@ async function askProvider(body) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
   try {
-    const upstream = await fetch(AI_API_URL, {
+    const prompt = buildPrompt(body);
+    const headers = {"Content-Type": "application/json"};
+    let endpoint = AI_API_URL;
+    let requestBody;
+    if (AI_PROVIDER === "ollama") {
+      requestBody = {model: AI_MODEL, stream: false, format: "json", options: {temperature: 0.25}, messages: [
+        {role: "system", content: "You return concise, valid JSON only. Do not wrap JSON in markdown."},
+        {role: "user", content: prompt}
+      ]};
+    } else {
+      headers.Authorization = `Bearer ${AI_API_KEY}`;
+      requestBody = {model: AI_MODEL, temperature: 0.25, messages: [
+        {role: "system", content: "You return concise JSON only."},
+        {role: "user", content: prompt}
+      ]};
+    }
+    const upstream = await fetch(endpoint, {
       method: "POST",
-      headers: {"Content-Type": "application/json", Authorization: `Bearer ${AI_API_KEY}`},
-      body: JSON.stringify({model: AI_MODEL, temperature: 0.25, messages: [{role: "system", content: "You return concise JSON only."}, {role: "user", content: buildPrompt(body)}]}),
+      headers,
+      body: JSON.stringify(requestBody),
       signal: controller.signal
     });
     if (!upstream.ok) throw new Error(`Provider returned ${upstream.status}`);
     const payload = await upstream.json();
-    const content = payload?.choices?.[0]?.message?.content;
+    const content = AI_PROVIDER === "ollama" ? payload?.message?.content : payload?.choices?.[0]?.message?.content;
     if (!content) throw new Error("Provider returned no message content");
     try { return JSON.parse(cleanJsonText(content)); }
-    catch (error) { throw new Error("Provider returned invalid JSON"); }
+    catch { throw new Error("Provider returned invalid JSON"); }
   } finally {
     clearTimeout(timeout);
   }
@@ -101,7 +119,9 @@ async function askProvider(body) {
 
 async function handleAi(request, response) {
   if (!configured()) {
-    sendError(response, 503, "AI_NOT_CONFIGURED", "Language-model assistance is not configured. Set AI_API_URL, AI_API_KEY, and AI_MODEL on the server.");
+    sendError(response, 503, "AI_NOT_CONFIGURED", AI_PROVIDER === "ollama"
+      ? "Ollama is selected but no model is configured. Set AI_MODEL or use the default qwen2.5-coder:7b."
+      : "Language-model assistance is not configured. Set AI_API_URL, AI_API_KEY, and AI_MODEL, or set AI_PROVIDER=ollama for local inference.");
     return;
   }
   let body;
@@ -115,9 +135,14 @@ async function handleAi(request, response) {
   if (validationMessage) { sendError(response, 400, "INVALID_REQUEST", validationMessage); return; }
   try {
     const result = await askProvider(body);
-    sendJson(response, 200, {ok: true, ...result, meta: {model: AI_MODEL}});
+    sendJson(response, 200, {ok: true, ...result, meta: {provider: AI_PROVIDER, model: AI_MODEL}});
   } catch (error) {
-    sendError(response, 502, "UPSTREAM_FAILURE", "The configured language-model provider could not complete this request.");
+    const timedOut = error?.name === "AbortError";
+    sendError(response, 502, timedOut ? "UPSTREAM_TIMEOUT" : "UPSTREAM_FAILURE", timedOut
+      ? "The language model took too long to respond. Try a shorter request or increase AI_TIMEOUT_MS."
+      : AI_PROVIDER === "ollama"
+        ? "Could not get a valid response from local Ollama. Check that Ollama is running and the configured model is available."
+        : "The configured language-model provider could not complete this request.");
   }
 }
 
@@ -136,7 +161,7 @@ const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   if (url.pathname === "/api/health") {
     if (request.method !== "GET") { sendError(response, 405, "METHOD_NOT_ALLOWED", "Use GET."); return; }
-    sendJson(response, 200, {ok: true, aiConfigured: configured()});
+    sendJson(response, 200, {ok: true, aiConfigured: configured(), aiProvider: AI_PROVIDER, aiModel: AI_MODEL || null});
     return;
   }
   if (url.pathname === "/api/scent-companion/assist") {
@@ -150,5 +175,5 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(PORT, () => {
   console.log(`Atelier is running at http://localhost:${PORT}`);
-  console.log(`AI assistance: ${configured() ? "configured" : "not configured (journal and speech still work)"}`);
+  console.log(`AI assistance: ${configured() ? `${AI_PROVIDER} / ${AI_MODEL}` : "not configured (journal and speech still work)"}`);
 });
