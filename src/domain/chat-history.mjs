@@ -13,6 +13,7 @@ function assistantText(content) {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       const answer = parsed.answer ?? parsed.clarifyingQuestion;
       if (typeof answer === 'string') return answer.trim();
+      if ('ok' in parsed || 'intent' in parsed || 'meta' in parsed) return '';
     }
   } catch { /* A user's ordinary text can resemble JSON; preserve it when it is not an answer envelope. */ }
   return text;
@@ -34,4 +35,16 @@ export function normalizeChatHistory(history, limit = DEFAULT_HISTORY_LIMIT) {
     normalized.push({ role: turn.role, content });
   }
   return normalized.slice(-limit);
+}
+
+/**
+ * Keep the active message in its dedicated request field only.
+ * Defensively removes a matching trailing user turn from supplied history.
+ */
+export function prepareChatRequest(message, history, limit = DEFAULT_HISTORY_LIMIT) {
+  const currentMessage = typeof message === 'string' ? message.trim() : '';
+  const priorHistory = normalizeChatHistory(history, limit);
+  const last = priorHistory[priorHistory.length - 1];
+  if (last?.role === 'user' && last.content === currentMessage) priorHistory.pop();
+  return { message: currentMessage, history: priorHistory };
 }
