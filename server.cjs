@@ -9,7 +9,7 @@ const AI_PROVIDER = String(process.env.AI_PROVIDER || "openai-compatible").toLow
 const AI_API_URL = process.env.AI_API_URL || (AI_PROVIDER === "ollama" ? "http://127.0.0.1:11434/api/chat" : "");
 const AI_API_KEY = process.env.AI_API_KEY || "";
 const AI_MODEL = process.env.AI_MODEL || (AI_PROVIDER === "ollama" ? "qwen2.5-coder:7b" : "");
-const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 120000);
+const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || (AI_PROVIDER === "ollama" ? 120000 : 15000));
 const MAX_BODY = 64 * 1024;
 
 const mimeTypes = {
