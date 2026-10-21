@@ -11,6 +11,7 @@ test('chat history is bounded and contains only role/content strings', () => {
     { role: 'assistant', content: 'It contributes a citrus opening.' }
   ];
   assert.deepEqual(normalizeChatHistory(history, 4), [
+    { role: 'user', content: 'Explain Hedione.' },
     { role: 'assistant', content: 'Hedione is a jasmine-like, diffusive material.' },
     { role: 'user', content: 'What about bergamot?' },
     { role: 'assistant', content: 'It contributes a citrus opening.' }
