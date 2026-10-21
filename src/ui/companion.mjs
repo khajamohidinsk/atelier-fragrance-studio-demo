@@ -1,4 +1,5 @@
 import { addCompanionEntry, deleteCompanionEntry, updateCompanionEntry } from '../domain/store.mjs';
+import { normalizeChatHistory, prepareChatRequest } from '../domain/chat-history.mjs';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 
@@ -199,16 +200,22 @@ export function initScentCompanion({ getState, persist, toast, materialNames = [
     const send = root.querySelector('#companion-chat-send');
     const statusNode = root.querySelector('#companion-chat-status');
     addChatMessage('user', message);
-    state.chatHistory.push({ role: 'user', content: message });
-    state.chatHistory = state.chatHistory.slice(-10);
+    // The current message is sent in the dedicated "message" field, not also in history.
+    // Only successful prior turns are kept as model context.
+    const chatRequest = prepareChatRequest(message, state.chatHistory, 8);
+    const priorHistory = chatRequest.history;
     input.value = '';
     send.disabled = true;
     statusNode.textContent = 'Thinking with the configured language model…';
     try {
-      const result = await requestAi('chat', { message, history: state.chatHistory, context: { materialName: fields('materialName').value.trim(), evaluationType: fields('evaluationType').value, observation: fields('observationText').value.trim() } });
+      const result = await requestAi('chat', { ...chatRequest, context: { materialName: fields('materialName').value.trim(), evaluationType: fields('evaluationType').value, observation: fields('observationText').value.trim() } });
       const answer = result.answer || result.clarifyingQuestion || 'I need a little more detail before I can help.';
       addChatMessage('assistant', answer, result.intent || 'companion');
-      state.chatHistory.push({ role: 'assistant', content: answer });
+      state.chatHistory = normalizeChatHistory([
+        ...priorHistory,
+        { role: 'user', content: message },
+        { role: 'assistant', content: answer }
+      ], 8);
       statusNode.textContent = result.clarifyingQuestion ? 'A little more detail will help.' : 'Answer ready.';
     } catch (error) {
       statusNode.textContent = error.message;
