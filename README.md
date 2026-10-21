@@ -72,7 +72,9 @@ AI_MODEL=provider-model-name
 AI_TIMEOUT_MS=15000
 ```
 
-The browser calls `POST /api/scent-companion/assist` for `vocabulary`, `explain`, or `briefing`. The server validates requests, keeps the API key out of browser code, applies a request limit and timeout, and returns a generic error when configuration or the upstream provider is unavailable. Vocabulary results preserve the user's observation and remain separate until reviewed. Briefings are explicitly intended/predicted from supplied formula information, not physical observations.
+The browser calls `POST /api/scent-companion/assist` for `chat`, `vocabulary`, `explain`, or `briefing`. The conversational `chat` action accepts a free-form message plus bounded recent history and asks the provider to classify the request, answer it, or ask one clarifying question. The server validates requests, keeps the API key out of browser code, applies a request limit and timeout, and returns a generic error when configuration or the upstream provider is unavailable. Vocabulary results preserve the user's observation and remain separate until reviewed. Briefings are explicitly intended/predicted from supplied formula information, not physical observations.
+
+The server does not automatically read a `.env` file. Supply these variables through the process environment or your deployment secret manager, for example in PowerShell with `$env:AI_API_KEY = '...'` before `npm start`. `.env` is ignored by Git.
 
 ## Calculation conventions
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addRevision, batchSummary, createInitialState, deleteCompanionEntry, exportState, importLegacyCompanionEntries, updateCompanionEntry } from '../src/domain/store.mjs';
+import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addRevision, batchSummary, createInitialState, deleteCompanionEntry, exportState, importLegacyCompanionEntries, saveState, updateCompanionEntry } from '../src/domain/store.mjs';
 
 test('journal, experiment, revision, batch, and evaluation remain linked', () => {
   let state = { ...createInitialState(), experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [] };
@@ -52,6 +52,22 @@ test('legacy companion storage imports without losing context or timestamps', ()
   const result = importLegacyCompanionEntries({ ...createInitialState(), companionEntries: [] }, storage);
   assert.equal(result.imported, 1);
   assert.deepEqual({ ...result.state.companionEntries[0], aiSuggestions: undefined }, { ...legacy.entries[0], aiSuggestions: undefined });
+});
+
+test('legacy companion import merges older entries even when newer entries already exist', () => {
+  const legacy = { schemaVersion: 1, entries: [
+    { id: 'legacy-existing', materialName: 'Rose', originalText: 'Already imported', createdAt: '2026-10-20T10:00:00.000Z' },
+    { id: 'legacy-older', materialName: 'Iris', originalText: 'Powdery and cool', createdAt: '2026-10-19T10:00:00.000Z' }
+  ] };
+  const current = { ...createInitialState(), companionEntries: [{ id: 'legacy-existing', materialName: 'Rose', originalText: 'Already imported', correctedText: 'Already imported', createdAt: '2026-10-20T10:00:00.000Z' }, { id: 'new-format', materialName: 'Cedar', originalText: 'Dry', createdAt: '2026-10-21T10:00:00.000Z' }] };
+  const storage = { getItem: key => key === 'atelier.scent-companion.v1' ? JSON.stringify(legacy) : null };
+  const result = importLegacyCompanionEntries(current, storage);
+  assert.equal(result.imported, 1);
+  assert.deepEqual(result.state.companionEntries.map(entry => entry.id), ['legacy-existing', 'new-format', 'legacy-older']);
+});
+
+test('saveState surfaces storage failures instead of reporting success', () => {
+  assert.throws(() => saveState(createInitialState(), { setItem: () => { throw new Error('quota'); } }), /Could not save Atelier data/);
 });
 
 test('companion deletion removes only the selected observation', () => {

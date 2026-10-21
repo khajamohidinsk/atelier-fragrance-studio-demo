@@ -62,13 +62,15 @@ function cleanJsonText(text) {
 
 function buildPrompt(body) {
   const base = "You are a careful beginner-friendly perfumery assistant. Preserve user observations exactly as observations, distinguish suggestions or intentions from physical trial results, never claim to know exactly what a person smelled, and never invent formula percentages, safety information, measurements, or ingredients not supplied. Return only valid JSON.";
+  if (body.action === "chat") return `${base}\nYou are in a conversational Scent Companion. Decide whether the user's free-form message is asking for a term explanation, observation analysis/vocabulary help, a formulation briefing, or clarification. Return {\"intent\":\"explain\"|\"observation\"|\"briefing\"|\"clarify\"|\"general\",\"answer\":string,\"clarifyingQuestion\":string|null}. If the request is unclear, use intent clarify, keep answer short, and ask one useful question. Use only the supplied message, recent conversation, and optional editor context. Do not silently rewrite or save the user's observation. Message: ${JSON.stringify(body.message || "")} Recent conversation: ${JSON.stringify(body.history || [])} Editor context: ${JSON.stringify(body.context || {})}`;
   if (body.action === "vocabulary") return `${base}\nReturn {\"preservedObservation\":string,\"suggestions\":[{\"term\":string,\"meaning\":string,\"why\":string}],\"clearerWording\":string}. Offer no more than five optional terms. User observation: ${JSON.stringify(body.observation || {})}`;
   if (body.action === "explain") return `${base}\nExplain the perfumery term for a beginner. Return {\"term\":string,\"explanation\":string}. Term: ${JSON.stringify(body.term || "")}`;
   return `${base}\nReturn {\"intendedCharacter\":string,\"roles\":[string],\"opening\":string,\"heart\":string,\"dryDown\":string,\"uncertainties\":[string],\"spokenText\":string}. Only describe opening, heart, or dry-down when the supplied information supports an intended development; otherwise say it is uncertain. Blend description: ${JSON.stringify(body.briefing || "")}`;
 }
 
 function validateRequest(body) {
-  if (!body || !["vocabulary", "explain", "briefing"].includes(body.action)) return "Expected action vocabulary, explain, or briefing.";
+  if (!body || !["chat", "vocabulary", "explain", "briefing"].includes(body.action)) return "Expected action chat, vocabulary, explain, or briefing.";
+  if (body.action === "chat" && (!body.message || typeof body.message !== "string" || body.message.length > 5000)) return "A non-empty message under 5000 characters is required.";
   if (body.action === "explain" && (!body.term || typeof body.term !== "string" || body.term.length > 80)) return "A short term is required.";
   if (body.action === "briefing" && (!body.briefing || typeof body.briefing !== "string" || body.briefing.length > 7000)) return "A blend description is required and must be under 7000 characters.";
   if (body.action === "vocabulary" && (!body.observation || typeof body.observation.text !== "string" || !body.observation.text.trim() || body.observation.text.length > 5000)) return "A non-empty observation under 5000 characters is required.";

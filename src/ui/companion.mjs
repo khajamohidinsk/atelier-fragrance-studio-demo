@@ -7,7 +7,7 @@ export function initScentCompanion({ getState, persist, toast, materialNames = [
   if (!root) return;
   const form = root.querySelector('#companion-form');
   const list = root.querySelector('#companion-entry-list');
-  const state = { editingId: '', lastAiResult: null, recognition: null, dictation: null, briefingText: '', synthesis: false };
+  const state = { editingId: '', lastAiResult: null, recognition: null, dictation: null, briefingText: '', synthesis: false, chatHistory: [] };
   const fields = name => form.elements[name];
   const status = (text, className = '') => { const node = root.querySelector('#companion-save-status'); node.textContent = text; node.className = `status-dot ${className}`; };
 
@@ -21,7 +21,10 @@ export function initScentCompanion({ getState, persist, toast, materialNames = [
     }
     state.editingId = '';
     state.lastAiResult = null;
-    if (state.dictation) state.dictation.lastSessionHadFinalText = false;
+    if (state.dictation) {
+      state.dictation.lastSessionHadFinalText = false;
+      state.dictation.currentEntrySpeech = false;
+    }
     form.reset();
     fields('evaluationType').value = 'neat';
     root.querySelector('#companion-editor-heading').textContent = 'New observation';
@@ -81,9 +84,9 @@ export function initScentCompanion({ getState, persist, toast, materialNames = [
     const values = collect();
     if (!values.materialName || !values.text) { status('Material and observation are required', 'error'); return; }
     const existing = state.editingId ? getState().companionEntries.find(entry => entry.id === state.editingId) : null;
-    const input = { ...values, originalText: existing?.originalText || values.text, correctedText: values.text, source: state.dictation?.lastSessionHadFinalText ? 'speech' : existing?.source || 'typed', aiSuggestions: existing?.aiSuggestions || [] };
+    const input = { ...values, originalText: existing?.originalText || values.text, correctedText: values.text, source: state.dictation?.currentEntrySpeech ? 'speech' : existing?.source || 'typed', aiSuggestions: existing?.aiSuggestions || [] };
     const next = existing ? updateCompanionEntry(getState(), state.editingId, input) : addCompanionEntry(getState(), input);
-    persist(next);
+    if (!persist(next)) { status('Save failed — your text is still in the editor', 'error'); return; }
     status('Saved in Atelier state', 'success');
     toast(existing ? 'Scent Companion observation updated' : 'Scent Companion observation saved');
     resetForm();
@@ -120,7 +123,7 @@ export function initScentCompanion({ getState, persist, toast, materialNames = [
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
     state.recognition = recognition;
-    state.dictation = { active: false, userStopped: false, fatal: false, startedAt: 0, autoRestarts: 0, baseText: '', accumulatedText: '', sessionFinalSegments: [], sessionInterim: '', lastSessionHadFinalText: false, restartTimer: null };
+    state.dictation = { active: false, userStopped: false, fatal: false, startedAt: 0, autoRestarts: 0, baseText: '', accumulatedText: '', sessionFinalSegments: [], sessionInterim: '', lastSessionHadFinalText: false, currentEntrySpeech: false, restartTimer: null };
 
     function composedText() { return [state.dictation.baseText, state.dictation.accumulatedText, state.dictation.sessionFinalSegments.filter(Boolean).join(' '), state.dictation.sessionInterim].map(value => value.trim()).filter(Boolean).join(' ').trim(); }
     function flushSession() {
@@ -142,7 +145,7 @@ export function initScentCompanion({ getState, persist, toast, materialNames = [
     recognition.onresult = event => {
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const transcript = event.results[index][0].transcript.trim();
-        if (event.results[index].isFinal) { state.dictation.sessionFinalSegments[index] = transcript; state.dictation.lastSessionHadFinalText = true; }
+        if (event.results[index].isFinal) { state.dictation.sessionFinalSegments[index] = transcript; state.dictation.lastSessionHadFinalText = true; state.dictation.currentEntrySpeech = true; }
         else state.dictation.sessionInterim = transcript;
       }
       fields('observationText').value = composedText();
@@ -171,6 +174,47 @@ export function initScentCompanion({ getState, persist, toast, materialNames = [
     if (!response.ok || !result.ok) throw new Error(result?.error?.message || 'AI assistance is unavailable.');
     return result;
   }
+
+  function addChatMessage(role, text, intent = '') {
+    const node = document.createElement('div');
+    node.className = `chat-message ${role}`;
+    if (intent) {
+      const label = document.createElement('span');
+      label.className = 'chat-intent';
+      label.textContent = intent;
+      node.appendChild(label);
+    }
+    const content = document.createElement('p');
+    content.textContent = text;
+    node.appendChild(content);
+    root.querySelector('#companion-chat-messages').appendChild(node);
+    node.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  root.querySelector('#companion-chat-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const input = root.querySelector('#companion-chat-input');
+    const message = input.value.trim();
+    if (!message) return;
+    const send = root.querySelector('#companion-chat-send');
+    const statusNode = root.querySelector('#companion-chat-status');
+    addChatMessage('user', message);
+    state.chatHistory.push({ role: 'user', content: message });
+    state.chatHistory = state.chatHistory.slice(-10);
+    input.value = '';
+    send.disabled = true;
+    statusNode.textContent = 'Thinking with the configured language model…';
+    try {
+      const result = await requestAi('chat', { message, history: state.chatHistory, context: { materialName: fields('materialName').value.trim(), evaluationType: fields('evaluationType').value, observation: fields('observationText').value.trim() } });
+      const answer = result.answer || result.clarifyingQuestion || 'I need a little more detail before I can help.';
+      addChatMessage('assistant', answer, result.intent || 'companion');
+      state.chatHistory.push({ role: 'assistant', content: answer });
+      statusNode.textContent = result.clarifyingQuestion ? 'A little more detail will help.' : 'Answer ready.';
+    } catch (error) {
+      statusNode.textContent = error.message;
+      addChatMessage('assistant error', 'I could not reach the configured AI service. Your message remains in this conversation; you can try again when the provider is available.');
+    } finally { send.disabled = false; }
+  });
 
   function renderAi(result, type) {
     state.lastAiResult = result;

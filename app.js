@@ -5,14 +5,28 @@ import { initScentCompanion } from './src/ui/companion.mjs';
 const $ = selector => document.querySelector(selector);
 let state = loadState();
 const legacyCompanion = importLegacyCompanionEntries(state);
-if (legacyCompanion.imported) { state = legacyCompanion.state; saveState(state); }
+if (legacyCompanion.imported) {
+  try { state = legacyCompanion.state; saveState(state); }
+  catch { state = legacyCompanion.state; }
+}
 let currentScreen = 'journal';
 let companionApi;
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const formatDate = value => value ? new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value)) : 'Date not recorded';
 const toast = message => { const node = $('#toast'); node.textContent = message; node.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => node.classList.remove('show'), 2200); };
-const persist = next => { state = next; saveState(state); renderAll(); companionApi?.render(); };
+const persist = next => {
+  try {
+    saveState(next);
+    state = next;
+    renderAll();
+    companionApi?.render();
+    return true;
+  } catch (error) {
+    toast(error.message);
+    return false;
+  }
+};
 function openDialog(id) { $( `#${id}`).showModal(); }
 function closeDialog(id) { $( `#${id}`).close(); }
 function tags(value) { return String(value || '').split(',').map(item => item.trim()).filter(Boolean); }
@@ -75,9 +89,9 @@ window.addEventListener('storage', event => { if (event.key === 'atelier-lab-sta
 $('#experiment-list').addEventListener('click', event => { const card = event.target.closest('[data-experiment-id]'); if (card) showExperimentDetail(card.dataset.experimentId); });
 $('#journal-search').addEventListener('input', renderJournal); $('#journal-filter').addEventListener('change', renderJournal); $('#experiment-search').addEventListener('input', renderExperiments); $('#experiment-status').addEventListener('change', renderExperiments); $('#compare-a').addEventListener('change', renderCompare); $('#compare-b').addEventListener('change', renderCompare);
 
-$('#journal-form').addEventListener('submit', event => { event.preventDefault(); const values = journalFormValues(event.target); const editId = event.target.dataset.editId; if (editId) persist({ ...state, journalEntries: state.journalEntries.map(item => item.id === editId ? { ...item, ...values } : item) }); else { const next = addJournalEntry(state, values); const created = next.journalEntries[0]; persist({ ...next, experiments: values.experimentId ? next.experiments.map(item => item.id === values.experimentId ? { ...item, journalEntryIds: [...new Set([...item.journalEntryIds, created.id])] } : item) : next.experiments }); } closeDialog('journal-dialog'); toast(editId ? 'Journal entry updated' : 'Journal entry saved'); });
-$('#experiment-form').addEventListener('submit', event => { event.preventDefault(); persist(addExperiment(state, Object.fromEntries(new FormData(event.target)))); closeDialog('experiment-dialog'); toast('Experiment created'); });
-$('#material-form').addEventListener('submit', event => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.target)); const material = { id: `material-${Date.now().toString(36)}`, name: values.name, canonicalIdentity: values.canonicalIdentity, supplier: values.supplier, lots: values.lotCode ? [{ id: `lot-${Date.now().toString(36)}`, lotCode: values.lotCode, acquiredAt: values.acquiredAt, stockConcentration: values.stockConcentration ? Number(values.stockConcentration) : undefined }] : [] }; persist({ ...state, materials: [material, ...state.materials] }); closeDialog('material-dialog'); toast('Material added to ledger'); });
+$('#journal-form').addEventListener('submit', event => { event.preventDefault(); const values = journalFormValues(event.target); const editId = event.target.dataset.editId; const next = editId ? { ...state, journalEntries: state.journalEntries.map(item => item.id === editId ? { ...item, ...values } : item) } : (() => { const createdState = addJournalEntry(state, values); const created = createdState.journalEntries[0]; return { ...createdState, experiments: values.experimentId ? createdState.experiments.map(item => item.id === values.experimentId ? { ...item, journalEntryIds: [...new Set([...item.journalEntryIds, created.id])] } : item) : createdState.experiments }; })(); if (persist(next)) { closeDialog('journal-dialog'); toast(editId ? 'Journal entry updated' : 'Journal entry saved'); } });
+$('#experiment-form').addEventListener('submit', event => { event.preventDefault(); const next = addExperiment(state, Object.fromEntries(new FormData(event.target))); if (persist(next)) { closeDialog('experiment-dialog'); toast('Experiment created'); } });
+$('#material-form').addEventListener('submit', event => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.target)); const material = { id: `material-${Date.now().toString(36)}`, name: values.name, canonicalIdentity: values.canonicalIdentity, supplier: values.supplier, lots: values.lotCode ? [{ id: `lot-${Date.now().toString(36)}`, lotCode: values.lotCode, acquiredAt: values.acquiredAt, stockConcentration: values.stockConcentration ? Number(values.stockConcentration) : undefined }] : [] }; if (persist({ ...state, materials: [material, ...state.materials] })) { closeDialog('material-dialog'); toast('Material added to ledger'); } });
 $('#dilution-form').addEventListener('submit', event => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.target)); const error = $('#calculator-error'); try { const result = calculateDilution({ stockConcentration: Number(values.stock), targetConcentration: Number(values.target), finalAmount: Number(values.amount), unit: values.unit }); error.textContent = ''; $('#calculator-result').classList.remove('empty-card'); $('#calculator-result').innerHTML = `<p class="label">CALCULATED RESULT · ${esc(result.unit)}</p><h2>${result.targetConcentration}% final concentration</h2><div class="result-lines"><div class="result-line"><span>Required stock</span><strong>${result.stockAmount.toFixed(4)} ${esc(result.unit)}</strong></div><div class="result-line"><span>Required diluent</span><strong>${result.diluentAmount.toFixed(4)} ${esc(result.unit)}</strong></div><div class="result-line"><span>Final quantity</span><strong>${result.finalAmount.toFixed(4)} ${esc(result.unit)}</strong></div></div><p class="muted">Formula: final × target ÷ stock. Calculated values are separate from measured additions.</p>`; } catch (calculationError) { error.textContent = calculationError.message; } });
 $('#record-dialog').addEventListener('submit', event => { event.preventDefault(); const form = event.target; try { if (form.id === 'revision-form') { const ingredients = form.elements.ingredients.value.split('\n').map(line => line.split('|').map(part => part.trim())).filter(parts => parts.length >= 3 && parts[0]).map(parts => ({ materialId: parts[0], materialName: parts[0], quantity: Number(parts[1]), unit: parts[2], stockConcentration: parts[3] ? Number(parts[3]) : undefined, role: parts[4] || '' })); persist(addRevision(state, form.dataset.experimentId, { notes: form.elements.notes.value, ingredients })); showExperimentDetail(form.dataset.experimentId); toast('Formula revision preserved'); }
     if (form.id === 'batch-form') { const values = Object.fromEntries(new FormData(form)); const actualAdditions = values.additions.split('\n').map(line => line.replace(/^\+/, '').split('|').map(part => part.trim())).filter(parts => parts.length >= 4 && parts[0]).map(parts => ({ id: `addition-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`, materialId: parts[0], materialLotId: parts[1], amount: Number(parts[2]), unit: parts[3], concentration: parts[4] ? Number(parts[4]) : 100, addedAt: new Date().toISOString() })); persist(addBatch(state, form.dataset.experimentId, { formulaRevisionId: values.formulaRevisionId, plannedAmount: Number(values.plannedAmount), unit: values.unit, actualAdditions, procedureNotes: values.procedureNotes })); showExperimentDetail(form.dataset.experimentId); toast('Actual batch additions recorded'); }
