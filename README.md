@@ -52,29 +52,25 @@ Scent Companion stores observations in `state.companionEntries`. Each record ret
 
 The dictation controller uses `SpeechRecognition` or `webkitSpeechRecognition` with `continuous` mode where available. Browser services can still end a session, so the controller flushes final results, preserves accumulated text, restarts only while the user has not pressed Stop, and stops after a bounded ten-minute/24-restart limit. Microphone permission denial, unsupported browsers, no-speech, network, and fatal capture errors leave manual typing available. Raw audio is never stored.
 
+Briefing playback uses the browser's built-in `speechSynthesis` / `SpeechSynthesisUtterance` APIs. It does not call an AI speech service and does not require an API key. Voice availability, pronunciation, and offline behavior depend on the browser and installed operating-system voices. Listen becomes available after a briefing has been generated; Pause/Resume and Stop control the active utterance.
+
 The current persistence boundary is browser-local `localStorage`: it survives reloads in the same browser profile but has no cloud backup and does not synchronize across browser profiles, devices, or users. The pure store operations (`addCompanionEntry`, `updateCompanionEntry`, `deleteCompanionEntry`, and `importLegacyCompanionEntries`) are the adapter surface for a future authenticated Ravenn persistence service.
 
-### Optional AI server
+### Free local AI with Ollama (no API key)
 
-AI assistance is intentionally server-side. Start the included OpenAI-compatible proxy with:
+The server supports Ollama's native local chat endpoint. Install and start Ollama, and ensure the model is available locally. For the current model already used in this project, `qwen2.5-coder:7b`, start the Atelier server in PowerShell like this:
 
-```bash
+```powershell
+$env:AI_PROVIDER = 'ollama'
+$env:AI_MODEL = 'qwen2.5-coder:7b'
 npm start
 ```
 
-Configure it through server environment variables; never commit a real key:
+Ollama's default endpoint is `http://127.0.0.1:11434/api/chat`. Override it with `AI_API_URL` only if Ollama is listening elsewhere. No `AI_API_KEY` is required for local Ollama. The server's default AI timeout is 120 seconds to allow a local model to respond on CPU; adjust `AI_TIMEOUT_MS` if necessary. Check `GET /api/health` for `aiConfigured`, `aiProvider`, and `aiModel`.
 
-```text
-PORT=8787
-AI_API_URL=https://provider.example/v1/chat/completions
-AI_API_KEY=server-only-secret
-AI_MODEL=provider-model-name
-AI_TIMEOUT_MS=15000
-```
+To use a remote OpenAI-compatible provider instead, set `AI_PROVIDER=openai-compatible`, `AI_API_URL`, `AI_API_KEY`, and `AI_MODEL`. Keep remote keys server-side; never commit them. The server does not automatically load a `.env` file, and `.env` is ignored by Git.
 
-The browser calls `POST /api/scent-companion/assist` for `chat`, `vocabulary`, `explain`, or `briefing`. The conversational `chat` action accepts a free-form message plus bounded recent history and asks the provider to classify the request, answer it, or ask one clarifying question. The server validates requests, keeps the API key out of browser code, applies a request limit and timeout, and returns a generic error when configuration or the upstream provider is unavailable. Vocabulary results preserve the user's observation and remain separate until reviewed. Briefings are explicitly intended/predicted from supplied formula information, not physical observations.
-
-The server does not automatically read a `.env` file. Supply these variables through the process environment or your deployment secret manager, for example in PowerShell with `$env:AI_API_KEY = '...'` before `npm start`. `.env` is ignored by Git.
+The browser calls `POST /api/scent-companion/assist` for `chat`, `vocabulary`, `explain`, or `briefing`. The conversational `chat` action accepts a free-form message plus bounded recent history and asks the model to classify the request, answer it, or ask one clarifying question. The server validates requests and returns a generic error when the local model or upstream provider is unavailable. Vocabulary results preserve the user's observation and remain separate until reviewed. Briefings are explicitly intended/predicted from supplied formula information, not physical observations.
 
 ## Calculation conventions
 
@@ -104,7 +100,7 @@ Serve the repository (or `dist/`) from a local HTTP server because ES modules ar
 python -m http.server 8000
 ```
 
-Open <http://localhost:8000>. Use the sidebar to move through Journal, Experiments, Materials, Dilution lab, Compare, and Export.
+Open <http://localhost:8000>. Use the sidebar to move through Journal, Experiments, Materials, Dilution lab, Compare, and Export. For AI actions, use the Node server on port 8787 and open the app through that server instead.
 
 ## Limitations and safety
 
