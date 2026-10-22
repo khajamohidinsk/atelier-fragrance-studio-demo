@@ -13,8 +13,10 @@ The core workflow is functional in the browser:
 5. Record actual batch additions, lot references, and procedure notes.
 6. Add sensory evaluations with intervals, conditions, descriptors, and optional measured-result notes.
 7. Compare two formula revisions side by side.
-8. Export the complete local record as a JSON backup.
-9. Open Scent Companion for editable sensory notes, browser dictation, optional vocabulary guidance, and spoken formulation briefings.
+8. Inspect lot-level stock balances and movements, including batch-linked consumption.
+9. Export and validate a versioned JSON backup, then merge or replace local state through an explicit import workflow.
+10. Compare revisions using deterministic ingredient/evaluation evidence and provenance warnings.
+11. Open Scent Companion for editable sensory notes, browser dictation, optional vocabulary guidance, and spoken formulation briefings.
 
 ## Features
 
@@ -22,7 +24,8 @@ The core workflow is functional in the browser:
 - Experiment workflow statuses: Draft, Mixed, Maturing, Evaluated, and Archived. These are workflow labels, not scientific validation claims.
 - Immutable formula revision history with `supersedesRevisionId` links.
 - Material and lot ledger with optional supplier, product/reference, acquisition date, purity, stock concentration, solvent, storage notes, and safety-reference fields.
-- Batch traceability: every batch references an experiment and exact formula revision, while actual additions retain material and lot IDs.
+- Append-only stock movements: opening, receipt, adjustment, consumption, wastage, correction, and reversal. Balances are replayed from movements; they are not independently editable.
+- Batch traceability: every batch references an experiment and exact formula revision, while actual additions retain material, exact lot, and exactly one linked consumption movement.
 - Sensory timeline records for multiple intervals after mixing and a comparison view that keeps subjective impressions separate from measured-result text.
 - Keyboard-friendly dialogs, readable tables, responsive mobile layouts, empty states, sample-data warnings, and local JSON export.
 
@@ -37,14 +40,41 @@ app.js                      UI orchestration and browser event handlers
 src/domain/types.js         JSDoc domain models (editor/type tooling friendly)
 src/domain/calculations.mjs Pure calculation and unit-validation logic
 src/domain/store.mjs        Normalized state, relationship helpers, persistence
+src/domain/persistence.mjs  Injectable browser-local persistence adapter
+src/domain/backup.mjs       Versioned export, validation, merge, and restore
+src/domain/comparison.mjs   Pure deterministic revision comparison
+src/domain/summaries.mjs    Provenance-aware experiment summaries
 src/ui/companion.mjs        Scent Companion editor, speech APIs, AI review flow
 src/ui/companion.css        Namespaced Companion styling
 tests/calculations.test.mjs Calculation unit tests
-tests/store.test.mjs        Persistence-model and traceability tests
+tests/store.test.mjs        Store, stock-ledger, and relationship tests
+tests/backup.test.mjs       Backup validation, merge, and round-trip tests
+tests/persistence.test.mjs  Adapter and legacy migration tests
+tests/comparison.test.mjs   Deterministic comparison and summary tests
 scripts/                    Lint, type-model, and static build checks
 ```
 
-The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, Companion observations, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, Companion observations, stock movements, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+
+## Stock ledger and history integrity
+
+Each lot belongs to one material and has a stock unit. A movement quantity is always positive; movement type and direction determine whether it increases or decreases the replayed balance. Mass and volume remain separate unless a valid density is supplied. Consumption is rejected when it would make the lot balance negative.
+
+Batch creation validates the experiment, canonical formula revision, material/lot ownership, units, concentrations, and exact addition identifiers before constructing the next state. It appends one `consumption` movement per actual addition and stores that movement ID on the addition. A repeated addition ID or movement ID is rejected. Corrections are compensating movements; historical movements are never rewritten. Existing version-1 local state is migrated by inferring an opening balance from legacy batch additions and recording the migration provenance.
+
+Formula revisions are append-only. A new revision must belong to the target experiment and supersede that experiment's current latest revision. Batches retain the exact revision used. Evaluations validate experiment, batch, and revision relationships and derive a missing revision from the selected batch when possible. Journal-to-experiment reverse links are maintained by the domain operation rather than only by the UI.
+
+## Versioned backup and persistence adapter
+
+Backups use the envelope `{format: "atelier-scent-lab-backup", backupVersion: 1, schemaVersion: 2, application, exportedAt, state}`. Import validates JSON, format/version, record IDs, units, and relationships before applying anything. Merge adds only missing IDs and reports conflicting IDs without overwriting current records. Replace explicitly replaces the local state after validation. Re-importing the same file is idempotent. The current version-1 local state and legacy `atelier.scent-companion.v1` data are migrated without deleting the source until the new state has been saved successfully.
+
+`src/domain/persistence.mjs` defines the small adapter seam used by the app: `load()`, `save(state)`, `subscribe(listener)`, and `schemaVersion`. The included adapter is synchronous browser `localStorage`; tests use an in-memory adapter. Storage, serialization, malformed-state, quota, and migration failures are surfaced instead of being reported as successful saves or silently reset.
+
+The browser-local boundary still means no cloud backup, cross-device synchronization, authentication, or multi-user access. The adapter is replaceable later; no remote persistence implementation is included here.
+
+## Recorded-data analysis and provenance
+
+`compareRevisions()` compares stable ingredient keys, quantities, units, concentrations, roles, lots, revision-linked batches, and revision-linked evaluations. It reports incompatible or differing evaluation conditions instead of implying a controlled comparison. `summarizeExperiment()` keeps recorded, measured, subjective, synthetic/demo, and AI-generated categories distinct and emits warnings when evidence is missing or provenance is incomplete. No causal conclusion or missing measurement is invented.
 
 ## Scent Companion
 

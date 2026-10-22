@@ -1,15 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addRevision, batchSummary, createInitialState, deleteCompanionEntry, exportState, importLegacyCompanionEntries, saveState, updateCompanionEntry } from '../src/domain/store.mjs';
+import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addRevision, addStockMovement, batchSummary, createInitialState, deleteCompanionEntry, deleteLot, deleteMaterial, exportState, importLegacyCompanionEntries, reverseStockMovement, saveState, stockBalance, updateCompanionEntry, updateJournalEntry } from '../src/domain/store.mjs';
 
 test('journal, experiment, revision, batch, and evaluation remain linked', () => {
-  let state = { ...createInitialState(), experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [] };
+  let state = { ...createInitialState(), experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [], stockMovements: createInitialState().stockMovements.slice(0, 2) };
   state = addJournalEntry(state, { title: 'Test memory', purpose: 'Check a citrus opening' });
   state = addExperiment(state, { title: 'Citrus trial', objective: 'Test lift', status: 'Draft' });
   const experiment = state.experiments[0];
-  state = addRevision(state, experiment.id, { notes: 'Revision one', ingredients: [{ materialId: 'm1', quantity: 1, unit: 'g' }] });
+   state = addRevision(state, experiment.id, { notes: 'Revision one', ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 1, unit: 'g' }] });
   const revision = state.revisions[0];
-  state = addBatch(state, experiment.id, { formulaRevisionId: revision.id, plannedAmount: 10, unit: 'g', actualAdditions: [{ materialId: 'm1', materialLotId: 'lot-1', amount: 1, unit: 'g', concentration: 100 }] });
+   state = addBatch(state, experiment.id, { formulaRevisionId: revision.id, plannedAmount: 1, unit: 'g', actualAdditions: [{ materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 1, unit: 'g', concentration: 100 }] });
   const batch = state.batches[0];
   state = addEvaluation(state, experiment.id, { batchId: batch.id, revisionId: revision.id, subjectiveNotes: 'Brighter than expected' });
   assert.deepEqual(state.experiments[0].formulaRevisionIds, [revision.id]);
@@ -29,10 +29,10 @@ test('historical formula revisions are appended, never overwritten', () => {
 
 test('batch summary keeps actual material traceability', () => {
   const batch = { unit: 'g', actualAdditions: [{ materialId: 'a', amount: 2, unit: 'g', concentration: 100 }, { materialId: 'b', amount: 8, unit: 'g', concentration: 0 }] };
-  assert.deepEqual(batchSummary(batch), { totalAmount: 10, totalActiveAmount: 2, unit: 'g', byMaterial: { a: 2, b: 8 } });
+  assert.deepEqual(batchSummary(batch), { totalAmount: 10, totalActiveAmount: 2, unit: 'g', byMaterial: { a: 2, b: 8 }, byLot: {}, variance: null });
 });
 
-test('state export is portable JSON', () => { const exported = JSON.parse(exportState(createInitialState())); assert.equal(exported.version, 1); assert.ok(exported.exportedAt); });
+test('state export is portable JSON', () => { const exported = JSON.parse(exportState(createInitialState())); assert.equal(exported.version, 2); assert.ok(exported.exportedAt); });
 
 test('companion observations preserve original and corrected text through edits', () => {
   let state = { ...createInitialState(), companionEntries: [] };
@@ -78,4 +78,81 @@ test('companion deletion removes only the selected observation', () => {
   state = deleteCompanionEntry(state, removedId);
   assert.equal(state.companionEntries.length, 1);
   assert.equal(state.companionEntries[0].materialName, 'A');
+});
+
+test('stock movements replay opening, receipt, wastage, and reversal balances', () => {
+  let state = createInitialState();
+  const before = stockBalance(state, 'lot-seed-1');
+  state = addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'receipt', quantity: 10, unit: 'g', note: 'Receipt' });
+  state = addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'wastage', quantity: 2, unit: 'g', note: 'Spill' });
+  const receipt = state.stockMovements.find(item => item.movementType === 'receipt');
+  state = reverseStockMovement(state, receipt.id, 'Receipt correction');
+  assert.equal(stockBalance(state, 'lot-seed-1'), before - 2);
+  assert.equal(state.stockMovements.filter(item => item.materialLotId === 'lot-seed-1').length, 5);
+});
+
+test('stock movement rejects mismatched lots, incompatible units, duplicate ids, and insufficient stock', () => {
+  const state = createInitialState();
+  assert.throws(() => addStockMovement(state, { materialId: 'material-seed-2', materialLotId: 'lot-seed-1', movementType: 'receipt', quantity: 1, unit: 'g' }), /do not match/);
+  assert.throws(() => addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'receipt', quantity: 1, unit: 'mL' }), /Density/);
+  assert.throws(() => addStockMovement(state, { id: 'movement-seed-1', materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'receipt', quantity: 1, unit: 'g' }), /already exists/);
+  assert.throws(() => addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'wastage', quantity: 1000, unit: 'g' }), /Insufficient/);
+});
+
+test('batch consumption is linked once to an exact lot and duplicate additions are rejected', () => {
+  let state = { ...createInitialState(), experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [], stockMovements: createInitialState().stockMovements.slice(0, 2) };
+  state = addExperiment(state, { title: 'Lot trial', objective: 'Trace stock' });
+  const experiment = state.experiments[0];
+  state = addRevision(state, experiment.id, { ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 1, unit: 'g' }] });
+  const revision = state.revisions[0];
+  state = addBatch(state, experiment.id, { formulaRevisionId: revision.id, plannedAmount: 2, unit: 'g', actualAdditions: [{ id: 'addition-once', materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 2, unit: 'g', concentration: 100 }] });
+  assert.equal(state.stockMovements.filter(item => item.additionId === 'addition-once').length, 1);
+  const consumption = state.stockMovements.find(item => item.additionId === 'addition-once');
+  assert.equal(state.batches[0].actualAdditions[0].stockMovementId, consumption.id);
+  assert.equal(consumption.batchId, state.batches[0].id);
+  assert.throws(() => addBatch(state, experiment.id, { formulaRevisionId: revision.id, plannedAmount: 1, unit: 'g', actualAdditions: [{ id: 'addition-once', materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 1, unit: 'g', concentration: 100 }] }), /already exists/);
+});
+
+test('relationship helpers reject cross-experiment references and preserve reverse links', () => {
+  let state = { ...createInitialState(), experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [], stockMovements: createInitialState().stockMovements.slice(0, 2) };
+  state = addExperiment(state, { title: 'First', objective: 'First' });
+  state = addExperiment(state, { title: 'Second', objective: 'Second' });
+  const first = state.experiments[1]; const second = state.experiments[0];
+  state = addRevision(state, first.id, { ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 1, unit: 'g' }] });
+  const firstRevision = state.revisions[0];
+  assert.throws(() => addRevision(state, second.id, { supersedesRevisionId: firstRevision.id, ingredients: [] }), /current latest|predecessor/);
+  assert.throws(() => addBatch(state, second.id, { formulaRevisionId: firstRevision.id, plannedAmount: 1, unit: 'g', actualAdditions: [{ materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 1, unit: 'g', concentration: 100 }] }), /revision belonging/);
+  state = addJournalEntry(state, { title: 'Linked', experimentId: first.id });
+  assert.deepEqual(state.experiments.find(item => item.id === first.id).journalEntryIds, [state.journalEntries[0].id]);
+});
+
+test('editing a journal entry moves its reverse experiment link without orphaning history', () => {
+  let state = { ...createInitialState(), experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [], stockMovements: createInitialState().stockMovements.slice(0, 2) };
+  state = addExperiment(state, { title: 'First', objective: 'First' });
+  state = addExperiment(state, { title: 'Second', objective: 'Second' });
+  const first = state.experiments[1]; const second = state.experiments[0];
+  state = addJournalEntry(state, { title: 'Memory', experimentId: first.id });
+  const entry = state.journalEntries[0];
+  state = updateJournalEntry(state, entry.id, { experimentId: second.id });
+  assert.deepEqual(state.experiments.find(item => item.id === first.id).journalEntryIds, []);
+  assert.deepEqual(state.experiments.find(item => item.id === second.id).journalEntryIds, [entry.id]);
+});
+
+test('referenced materials and lots cannot be deleted or orphan their history', () => {
+  const state = createInitialState();
+  assert.throws(() => deleteMaterial(state, 'material-seed-1'), /cannot be deleted/);
+  assert.throws(() => deleteLot(state, 'lot-seed-1'), /cannot be deleted/);
+});
+
+test('evaluations reject foreign batches and mismatched revisions', () => {
+  let state = { ...createInitialState(), experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [], stockMovements: createInitialState().stockMovements.slice(0, 2) };
+  state = addExperiment(state, { title: 'One', objective: 'One' });
+  state = addExperiment(state, { title: 'Two', objective: 'Two' });
+  const one = state.experiments[1]; const two = state.experiments[0];
+  state = addRevision(state, one.id, { ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 1, unit: 'g' }] });
+  const revision = state.revisions[0];
+  state = addBatch(state, one.id, { formulaRevisionId: revision.id, plannedAmount: 1, unit: 'g', actualAdditions: [{ materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 1, unit: 'g', concentration: 100 }] });
+  const batch = state.batches[0];
+  assert.throws(() => addEvaluation(state, two.id, { batchId: batch.id }), /does not belong/);
+  assert.throws(() => addEvaluation(state, one.id, { batchId: batch.id, revisionId: 'foreign-revision' }), /does not belong/);
 });

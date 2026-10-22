@@ -4,7 +4,7 @@ import { calculateBatchTotals, calculateDilution, calculateFinalConcentration, c
 
 test('calculates stock dilution and preserves mass/volume basis', () => {
   assert.deepEqual(calculateDilution({ stockConcentration: 50, targetConcentration: 10, finalAmount: 100, unit: 'g' }), {
-    stockAmount: 20, diluentAmount: 80, finalAmount: 100, unit: 'g', targetConcentration: 10,
+    stockAmount: 20, diluentAmount: 80, finalAmount: 100, unit: 'g', stockConcentration: 50, targetConcentration: 10,
   });
   assert.equal(calculateDilution({ stockConcentration: 20, targetConcentration: 5, finalAmount: 100, unit: 'mL' }).stockAmount, 25);
 });
@@ -39,6 +39,7 @@ test('batch totals retain material traceability and active amount', () => {
     { materialId: 'carrier-lot', amount: 5, unit: 'g', concentration: 0 },
   ], { unit: 'g' });
   assert.deepEqual(result.byMaterial, { 'rose-lot': 5, 'carrier-lot': 5 });
+  assert.deepEqual(result.byLot, {});
   assert.equal(result.totalAmount, 10);
   assert.equal(result.totalActiveAmount, 5);
 });
