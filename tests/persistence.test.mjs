@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createMemoryAdapter, createLocalStorageAdapter } from '../src/domain/persistence.mjs';
+import { bootstrapState, createMemoryAdapter, createLocalStorageAdapter } from '../src/domain/persistence.mjs';
 import { createInitialState, loadState } from '../src/domain/store.mjs';
 
 test('memory persistence adapter supports injected load/save', () => {
@@ -19,6 +19,35 @@ test('local storage adapter reports missing storage and preserves the current ke
   const saved = adapter.save(createInitialState());
   assert.equal(saved.version, 2);
   assert.equal(adapter.load().version, 2);
+});
+
+test('bootstrap after failed load returns locked state that must not be saved', () => {
+  const writes = [];
+  const storage = { getItem: () => '{bad json', setItem: (...args) => writes.push(args) };
+  const boot = bootstrapState(createLocalStorageAdapter(storage));
+  assert.equal(boot.locked, true);
+  assert.match(boot.error, /malformed/);
+  assert.equal(boot.state.version, 2);
+  assert.deepEqual(writes, [], 'bootstrap must not write anything to storage');
+});
+
+test('bootstrap after successful load is unlocked and preserves saved records', () => {
+  const saved = { ...createInitialState(), tags: ['kept'] };
+  const storage = new Map();
+  const adapter = createLocalStorageAdapter({ getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) });
+  adapter.save(saved);
+  const boot = bootstrapState(adapter);
+  assert.equal(boot.locked, false);
+  assert.equal(boot.error, '');
+  assert.deepEqual(boot.state.tags, ['kept']);
+});
+
+test('bootstrap with empty storage (fresh environment) is unlocked with fresh state', () => {
+  const adapter = createLocalStorageAdapter({ getItem: () => null, setItem: () => { throw new Error('should not write'); } });
+  const boot = bootstrapState(adapter);
+  assert.equal(boot.locked, false);
+  assert.equal(boot.error, '');
+  assert.equal(boot.state.version, 2);
 });
 
 test('loadState rejects malformed saved data instead of returning seed state', () => {
