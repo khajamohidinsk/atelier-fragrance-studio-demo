@@ -130,12 +130,19 @@ export function createInitialState() {
   };
 }
 
+const STATE_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'calculations', 'tags', 'attachments', 'companionEntries', 'stockMovements'];
+
 export function normalizeState(input) {
-  const base = createInitialState();
-  const state = { ...base, ...clone(input), version: input?.version ?? CURRENT_SCHEMA_VERSION };
-  for (const key of ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'calculations', 'tags', 'attachments', 'companionEntries', 'stockMovements']) state[key] = Array.isArray(state[key]) ? state[key] : [];
-  state.materials = state.materials.map(material => ({ ...material, lots: Array.isArray(material.lots) ? material.lots.map(lot => ({ ...lot, materialId: lot.materialId || material.id })) : [] }));
-  if ((input?.version || 1) < CURRENT_SCHEMA_VERSION && (!Array.isArray(input?.stockMovements) || input.stockMovements.length === 0)) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Atelier state must be a JSON object.');
+  if (input.version !== undefined && (!Number.isInteger(input.version) || input.version < 1)) throw new Error('Atelier state schema version is invalid.');
+  if (input.version > CURRENT_SCHEMA_VERSION) throw new Error(`Atelier data uses unsupported schema version ${input.version}.`);
+  const state = { ...clone(input), version: input.version ?? 1 };
+  for (const key of STATE_COLLECTIONS) state[key] = Array.isArray(state[key]) ? state[key] : [];
+  state.materials = state.materials.map(material => {
+    if (!material || typeof material !== 'object') throw new Error('Material records must be JSON objects.');
+    return { ...material, lots: Array.isArray(material.lots) ? material.lots.map(lot => { if (!lot || typeof lot !== 'object') throw new Error('Material lot records must be JSON objects.'); return { ...lot, materialId: lot.materialId || material.id }; }) : [] };
+  });
+  if ((input.version || 1) < CURRENT_SCHEMA_VERSION && (!Array.isArray(input.stockMovements) || input.stockMovements.length === 0)) {
     const additionsByLot = new Map();
     for (const batch of state.batches) for (const addition of batch.actualAdditions || []) if (addition.materialLotId) additionsByLot.set(addition.materialLotId, [...(additionsByLot.get(addition.materialLotId) || []), { batch, addition }]);
     state.stockMovements = [];
@@ -174,6 +181,7 @@ export function loadState(storage = globalThis.localStorage) {
   if (!raw) return createInitialState();
   let parsed;
   try { parsed = JSON.parse(raw); } catch { throw new Error('Saved Atelier data is malformed. Import a valid backup before continuing.'); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Saved Atelier data is malformed. Import a valid backup before continuing.');
   if (parsed.version > CURRENT_SCHEMA_VERSION) throw new Error(`Saved Atelier data uses unsupported schema version ${parsed.version}.`);
   return validateState(parsed);
 }

@@ -1,6 +1,47 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addRevision, addStockMovement, batchSummary, createInitialState, deleteCompanionEntry, deleteLot, deleteMaterial, exportState, importLegacyCompanionEntries, reverseStockMovement, saveState, stockBalance, updateCompanionEntry, updateJournalEntry } from '../src/domain/store.mjs';
+import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addRevision, addStockMovement, batchSummary, createInitialState, deleteCompanionEntry, deleteLot, deleteMaterial, exportState, importLegacyCompanionEntries, normalizeState, reverseStockMovement, saveState, stockBalance, updateCompanionEntry, updateJournalEntry, validateState } from '../src/domain/store.mjs';
+
+test('normalizeState never fills incomplete state with demo seed records', () => {
+  const normalized = normalizeState({ version: 2 });
+  assert.deepEqual(normalized.journalEntries, []);
+  assert.deepEqual(normalized.experiments, []);
+  assert.deepEqual(normalized.revisions, []);
+  assert.deepEqual(normalized.materials, []);
+  assert.deepEqual(normalized.batches, []);
+  assert.deepEqual(normalized.evaluations, []);
+  assert.deepEqual(normalized.stockMovements, []);
+  assert.deepEqual(normalized.companionEntries, []);
+  assert.ok(!JSON.stringify(normalized).includes('seed'), 'normalization must not inject seed records');
+});
+
+test('normalizeState preserves provided records without inventing linked records', () => {
+  const journal = { id: 'journal-own', title: 'Own entry', observedAt: '2026-10-20T00:00:00.000Z' };
+  const normalized = normalizeState({ version: 2, journalEntries: [journal] });
+  assert.deepEqual(normalized.journalEntries, [journal]);
+  assert.deepEqual(normalized.batches, []);
+  assert.deepEqual(normalized.stockMovements, []);
+});
+
+test('normalizeState rejects non-object, future, and invalid version input instead of seeding', () => {
+  assert.throws(() => normalizeState(null), /must be a JSON object/);
+  assert.throws(() => normalizeState('nope'), /must be a JSON object/);
+  assert.throws(() => normalizeState([1, 2]), /must be a JSON object/);
+  assert.throws(() => normalizeState({ version: 99 }), /unsupported schema version/);
+  assert.throws(() => normalizeState({ version: '2' }), /schema version is invalid/);
+  assert.throws(() => normalizeState({ version: 1.5 }), /schema version is invalid/);
+});
+
+test('normalizeState rejects malformed material records instead of replacing them', () => {
+  assert.throws(() => normalizeState({ version: 2, materials: [null] }), /Material records must be JSON objects/);
+  assert.throws(() => normalizeState({ version: 2, materials: [{ id: 'm-1', lots: [null] }] }), /Material lot records must be JSON objects/);
+});
+
+test('validateState operates on the provided state only', () => {
+  const validated = validateState({ version: 2 });
+  assert.deepEqual(validated.materials, []);
+  assert.deepEqual(validated.stockMovements, []);
+});
 
 test('journal, experiment, revision, batch, and evaluation remain linked', () => {
   let state = { ...createInitialState(), experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [], stockMovements: createInitialState().stockMovements.slice(0, 2) };

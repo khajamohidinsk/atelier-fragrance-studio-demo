@@ -21,6 +21,21 @@ test('local storage adapter reports missing storage and preserves the current ke
   assert.equal(adapter.load().version, 2);
 });
 
+test('loadState rejects malformed saved data instead of returning seed state', () => {
+  assert.throws(() => loadState({ getItem: () => '{' }), /malformed/);
+  assert.throws(() => loadState({ getItem: () => 'null' }), /malformed/);
+  assert.throws(() => loadState({ getItem: () => '[1, 2]' }), /malformed/);
+  assert.throws(() => loadState({ getItem: () => '"a string"' }), /malformed/);
+  assert.throws(() => loadState({ getItem: () => JSON.stringify({ version: 3 }) }), /unsupported schema version 3/);
+});
+
+test('loadState returns empty state for structurally valid but sparse saved data', () => {
+  const state = loadState({ getItem: () => JSON.stringify({ version: 2 }) });
+  assert.deepEqual(state.materials, []);
+  assert.deepEqual(state.stockMovements, []);
+  assert.ok(!JSON.stringify(state).includes('seed'));
+});
+
 test('legacy version 1 state migrates batch additions into auditable stock movements', () => {
   const current = createInitialState();
   const legacy = { ...current, version: 1, stockMovements: undefined };
