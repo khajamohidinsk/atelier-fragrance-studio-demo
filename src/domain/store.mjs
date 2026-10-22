@@ -143,16 +143,22 @@ export function normalizeState(input) {
     return { ...material, lots: Array.isArray(material.lots) ? material.lots.map(lot => { if (!lot || typeof lot !== 'object') throw new Error('Material lot records must be JSON objects.'); return { ...lot, materialId: lot.materialId || material.id }; }) : [] };
   });
   if ((input.version || 1) < CURRENT_SCHEMA_VERSION && (!Array.isArray(input.stockMovements) || input.stockMovements.length === 0)) {
+    // Legacy v1 batches recorded actual additions but no stock ledger. We can
+    // honestly reconstruct the consumption those additions document, but the
+    // opening balance is NOT recoverable from consumption history — inferring
+    // it would fabricate inventory. So: record only the consumption movements
+    // and leave any lot without a receivedAmount balance unknown. A lot that
+    // already carries receivedAmount gets an explicit opening movement for
+    // exactly that recorded amount, never for a derived total.
     const additionsByLot = new Map();
     for (const batch of state.batches) for (const addition of batch.actualAdditions || []) if (addition.materialLotId) additionsByLot.set(addition.materialLotId, [...(additionsByLot.get(addition.materialLotId) || []), { batch, addition }]);
     state.stockMovements = [];
     for (const [lotId, rows] of additionsByLot) {
-      const first = rows[0].addition;
-      const total = rows.reduce((sum, row) => sum + Number(row.addition.amount || 0), 0);
-      const openingId = `movement-legacy-opening-${lotId}`;
-      state.stockMovements.push({ id: openingId, materialId: first.materialId, materialLotId: lotId, movementType: 'opening', quantity: total, unit: first.unit, occurredAt: rows[0].batch.createdAt || now(), note: 'Migrated opening balance inferred from legacy batch additions.', provenance: 'migration' });
+      const { lot } = findLot(state, lotId);
+      if (lot.receivedAmount != null) {
+        state.stockMovements.push({ id: `movement-legacy-opening-${lotId}`, materialId: lot.materialId, materialLotId: lotId, movementType: 'opening', quantity: lot.receivedAmount, unit: lot.receivedUnit || lotUnit(lot), density: lot.density, occurredAt: lot.receivedAt || rows[0].batch.createdAt || now(), note: 'Migrated opening balance from recorded lot received amount.', provenance: 'migration' });
+      }
       for (const row of rows) { const movementId = `movement-legacy-${row.addition.id}`; row.addition.stockMovementId = movementId; state.stockMovements.push({ id: movementId, materialId: row.addition.materialId, materialLotId: row.addition.materialLotId, movementType: 'consumption', quantity: row.addition.amount, unit: row.addition.unit, density: row.addition.density, occurredAt: row.addition.addedAt || row.batch.createdAt || now(), batchId: row.batch.id, additionId: row.addition.id, note: 'Migrated from legacy actual addition.', provenance: 'migration' }); }
-      const { lot } = findLot(state, lotId); if (lot.receivedAmount == null) { lot.receivedAmount = total; lot.receivedUnit = first.unit; }
     }
   }
   state.version = CURRENT_SCHEMA_VERSION;

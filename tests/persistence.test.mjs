@@ -74,3 +74,43 @@ test('legacy version 1 state migrates batch additions into auditable stock movem
   assert.ok(state.stockMovements.some(item => item.provenance === 'migration'));
   assert.ok(state.batches[0].actualAdditions.every(addition => addition.stockMovementId));
 });
+
+test('legacy migration never infers an opening balance from consumption history', () => {
+  // A legacy lot with NO recorded receivedAmount must not gain a fabricated
+  // opening movement: the sum of consumption is not an opening balance.
+  const base = createInitialState();
+  const legacy = { ...base, version: 1, stockMovements: undefined };
+  legacy.batches = legacy.batches.map(batch => ({ ...batch, actualAdditions: batch.actualAdditions.map(({ stockMovementId, ...addition }) => addition) }));
+  // Strip receivedAmount so the lot has no recorded opening balance at all.
+  legacy.materials = legacy.materials.map(material => ({ ...material, lots: material.lots.map(({ receivedAmount, receivedUnit, ...lot }) => lot) }));
+  const state = loadState({ getItem: () => JSON.stringify(legacy) });
+  const lotIds = new Set(state.materials.flatMap(material => material.lots.map(lot => lot.id)));
+  const openings = state.stockMovements.filter(item => item.movementType === 'opening');
+  assert.deepEqual(openings, [], 'no opening movement may be synthesized from consumption');
+  for (const material of state.materials) for (const lot of material.lots) assert.equal(lot.receivedAmount, undefined, 'receivedAmount must not be backfilled from consumption');
+  // Consumption for every legacy addition is still reconstructed and linked.
+  assert.ok(state.stockMovements.some(item => item.movementType === 'consumption' && item.provenance === 'migration'));
+  assert.ok(state.batches[0].actualAdditions.every(addition => addition.stockMovementId));
+  assert.ok([...lotIds].length > 0);
+});
+
+test('legacy migration records opening only from an explicitly recorded receivedAmount', () => {
+  const base = createInitialState();
+  const legacy = { ...base, version: 1, stockMovements: undefined };
+  legacy.batches = legacy.batches.map(batch => ({ ...batch, actualAdditions: batch.actualAdditions.map(({ stockMovementId, ...addition }) => addition) }));
+  const state = loadState({ getItem: () => JSON.stringify(legacy) });
+  const openings = state.stockMovements.filter(item => item.movementType === 'opening');
+  // Every seed lot carries receivedAmount 100, so each lot may have exactly one
+  // opening movement of exactly 100 — matching the recorded amount, not a sum
+  // derived from consumption.
+  const lotIds = state.materials.flatMap(material => material.lots.map(lot => lot.id));
+  assert.equal(openings.length, lotIds.length);
+  for (const opening of openings) assert.equal(opening.quantity, 100);
+  for (const opening of openings) assert.ok(lotIds.includes(opening.materialLotId));
+  // No opening quantity may equal a fabricated per-lot consumption total.
+  for (const lotId of lotIds) {
+    const consumed = state.stockMovements.filter(item => item.materialLotId === lotId && item.movementType === 'consumption').reduce((sum, item) => sum + item.quantity, 0);
+    const opening = openings.find(item => item.materialLotId === lotId);
+    if (opening) assert.notEqual(opening.quantity, consumed);
+  }
+});
