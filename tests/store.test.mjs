@@ -154,6 +154,47 @@ test('batch consumption is linked once to an exact lot and duplicate additions a
   assert.throws(() => addBatch(state, experiment.id, { formulaRevisionId: revision.id, plannedAmount: 1, unit: 'g', actualAdditions: [{ id: 'addition-once', materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 1, unit: 'g', concentration: 100 }] }), /already exists/);
 });
 
+test('validateState rejects a batch addition whose linked movement belongs to another addition', () => {
+  const state = createInitialState();
+  // Seed has two additions each with its own consumption movement. Redirect
+  // addition-1's stockMovementId to addition-2's movement: the movement ID
+  // exists, so the old existence-only check passed, but the reciprocal
+  // relationship is broken.
+  const movementForAddition2 = state.stockMovements.find(item => item.additionId === 'addition-seed-2');
+  const broken = { ...state, batches: state.batches.map(batch => ({ ...batch, actualAdditions: batch.actualAdditions.map(addition => addition.id === 'addition-seed-1' ? { ...addition, stockMovementId: movementForAddition2.id } : addition) })) };
+  assert.throws(() => validateState(broken), /do not reference each other/);
+});
+
+test('validateState rejects a batch addition pointing at a non-consumption movement', () => {
+  const state = createInitialState();
+  // Point an addition at its lot's opening movement. That movement ID exists,
+  // but it is not a consumption, so it cannot back a batch addition.
+  const opening = state.stockMovements.find(item => item.movementType === 'opening' && item.materialLotId === 'lot-seed-1');
+  const broken = { ...state, batches: state.batches.map(batch => ({ ...batch, actualAdditions: batch.actualAdditions.map(addition => addition.id === 'addition-seed-1' ? { ...addition, stockMovementId: opening.id } : addition) })) };
+  assert.throws(() => validateState(broken), /consumption movement/);
+});
+
+test('validateState rejects a batch addition whose movement disagrees on material or lot', () => {
+  const state = createInitialState();
+  const broken = { ...state, stockMovements: state.stockMovements.map(item => item.id === 'movement-seed-1' ? { ...item, materialLotId: 'lot-seed-2' } : item) };
+  assert.throws(() => validateState(broken), /disagree on material or lot/);
+});
+
+test('validateState rejects a consumption movement not mirrored by its batch addition', () => {
+  const state = createInitialState();
+  // Break the reverse direction: movement points at an addition that does not
+  // point back at it.
+  const broken = { ...state, stockMovements: state.stockMovements.map(item => item.id === 'movement-seed-1' ? { ...item, additionId: 'addition-seed-2' } : item) };
+  assert.throws(() => validateState(broken), /do not reference each other|unknown batch addition/);
+});
+
+test('validateState accepts a well-formed state after reciprocal checks', () => {
+  const state = createInitialState();
+  const validated = validateState(state);
+  assert.ok(validated.batches.length > 0);
+  assert.ok(validated.stockMovements.length > 0);
+});
+
 test('relationship helpers reject cross-experiment references and preserve reverse links', () => {
   let state = { ...createInitialState(), experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [], stockMovements: createInitialState().stockMovements.slice(0, 2) };
   state = addExperiment(state, { title: 'First', objective: 'First' });
