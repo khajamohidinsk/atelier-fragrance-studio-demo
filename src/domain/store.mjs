@@ -61,7 +61,26 @@ function movementDirection(movement) {
   throw new Error(`Unsupported stock movement type "${movement.movementType}".`);
 }
 
-function normalizeMovement(state, input, { allowGeneratedId = false } = {}) {
+// An opening balance is "established" only when the lot records a received
+// amount or carries an explicit opening movement. A lot that arrived through
+// legacy migration without either has no trustworthy opening: its replayed
+// balance is a floor (every known consumption), not a measured stock figure.
+function hasOpeningEstablished(state, lotId) {
+  if (state.stockMovements.some(item => item.materialLotId === lotId && item.movementType === 'opening')) return true;
+  const { lot } = findLot(state, lotId);
+  return lot.receivedAmount != null;
+}
+
+// Consumption may only be added once a lot's opening is known. Without it we
+// cannot tell a valid draw from an overdraft, so we refuse rather than let a
+// negative replayed balance masquerade as a real stock figure.
+function assertConsumptionAllowed(state, movementType, lotId) {
+  if (movementType !== 'consumption') return;
+  if (hasOpeningEstablished(state, lotId)) return;
+  throw new Error(`Lot "${lotId}" has no established opening balance. Record its opening or received stock before recording consumption.`);
+}
+
+function normalizeMovement(state, input, { allowGeneratedId = false, enforceOpening = true } = {}) {
   const movementType = requireText(input.movementType, 'Movement type');
   if (!movementTypes.includes(movementType)) throw new Error(`Unsupported stock movement type "${movementType}".`);
   const materialId = requireText(input.materialId, 'Movement materialId');
@@ -76,6 +95,9 @@ function normalizeMovement(state, input, { allowGeneratedId = false } = {}) {
   const density = input.density ?? lot.density;
   const quantity = positiveFinite(input.quantity, 'Movement quantity');
   convertQuantity(quantity, unit, baseUnit, { density });
+  // Only new movements are gated. Replaying existing history through
+  // validateState must never reject consumption that predates reconciliation.
+  if (enforceOpening) assertConsumptionAllowed(state, movementType, materialLotId);
   if (movementType === 'reversal') {
     const reference = state.stockMovements.find(item => item.id === input.referenceMovementId);
     if (!reference) throw new Error('A reversal must reference an existing stock movement.');
@@ -157,6 +179,13 @@ export function normalizeState(input) {
       const { lot } = findLot(state, lotId);
       if (lot.receivedAmount != null) {
         state.stockMovements.push({ id: `movement-legacy-opening-${lotId}`, materialId: lot.materialId, materialLotId: lotId, movementType: 'opening', quantity: lot.receivedAmount, unit: lot.receivedUnit || lotUnit(lot), density: lot.density, occurredAt: lot.receivedAt || rows[0].batch.createdAt || now(), note: 'Migrated opening balance from recorded lot received amount.', provenance: 'migration' });
+        lot.reconciliation = 'established';
+      } else {
+        // No trustworthy opening exists for this lot. Preserve the historical
+        // consumption (below) but flag the lot as unreconciled so its replayed
+        // balance is read as a floor, and block further consumption until the
+        // real opening is recorded.
+        lot.reconciliation = 'unreconciled';
       }
       for (const row of rows) { const movementId = `movement-legacy-${row.addition.id}`; row.addition.stockMovementId = movementId; state.stockMovements.push({ id: movementId, materialId: row.addition.materialId, materialLotId: row.addition.materialLotId, movementType: 'consumption', quantity: row.addition.amount, unit: row.addition.unit, density: row.addition.density, occurredAt: row.addition.addedAt || row.batch.createdAt || now(), batchId: row.batch.id, additionId: row.addition.id, note: 'Migrated from legacy actual addition.', provenance: 'migration' }); }
     }
@@ -174,9 +203,9 @@ export function validateState(state) {
   const experimentIds = new Set(normalized.experiments.map(item => item.id)); const revisionIds = new Set(normalized.revisions.map(item => item.id)); const batchIds = new Set(normalized.batches.map(item => item.id));
   for (const experiment of normalized.experiments) { if (!statuses.includes(experiment.status)) throw new Error(`Invalid experiment status for ${experiment.id}.`); for (const revisionId of experiment.formulaRevisionIds || []) { const revision = normalized.revisions.find(item => item.id === revisionId); if (!revision || revision.experimentId !== experiment.id) throw new Error(`Experiment ${experiment.id} has an invalid revision link.`); } for (const batchId of experiment.batchIds || []) { const batch = normalized.batches.find(item => item.id === batchId); if (!batch || batch.experimentId !== experiment.id) throw new Error(`Experiment ${experiment.id} has an invalid batch link.`); } for (const evaluationId of experiment.evaluationIds || []) { const evaluation = normalized.evaluations.find(item => item.id === evaluationId); if (!evaluation || evaluation.experimentId !== experiment.id) throw new Error(`Experiment ${experiment.id} has an invalid evaluation link.`); } }
   for (const revision of normalized.revisions) { if (!experimentIds.has(revision.experimentId)) throw new Error(`Revision ${revision.id} references an unknown experiment.`); if (revision.supersedesRevisionId && (!revisionIds.has(revision.supersedesRevisionId) || normalized.revisions.find(item => item.id === revision.supersedesRevisionId).experimentId !== revision.experimentId)) throw new Error(`Revision ${revision.id} has an invalid predecessor.`); for (const ingredient of revision.ingredients || []) { if (!materialIds.has(ingredient.materialId)) throw new Error(`Revision ${revision.id} references an unknown material.`); if (ingredient.lotId && !lotIds.has(ingredient.lotId)) throw new Error(`Revision ${revision.id} references an unknown lot.`); } }
-  for (const batch of normalized.batches) { if (!experimentIds.has(batch.experimentId)) throw new Error(`Batch ${batch.id} references an unknown experiment.`); const revision = normalized.revisions.find(item => item.id === batch.formulaRevisionId); if (!revision || revision.experimentId !== batch.experimentId) throw new Error(`Batch ${batch.id} references an invalid revision.`); for (const addition of batch.actualAdditions || []) { validateAddition(normalized, addition); const movement = normalized.stockMovements.find(item => item.id === addition.stockMovementId); if (!movement) throw new Error(`Batch addition ${addition.id} is missing a stock movement.`); if (movement.movementType !== 'consumption') throw new Error(`Batch addition ${addition.id} must link to a consumption movement.`); if (movement.batchId !== batch.id || movement.additionId !== addition.id) throw new Error(`Batch addition ${addition.id} and movement ${movement.id} do not reference each other.`); if (movement.materialId !== addition.materialId || movement.materialLotId !== addition.materialLotId) throw new Error(`Batch addition ${addition.id} and movement ${movement.id} disagree on material or lot.`); } }
+  for (const batch of normalized.batches) { if (!experimentIds.has(batch.experimentId)) throw new Error(`Batch ${batch.id} references an unknown experiment.`); const revision = normalized.revisions.find(item => item.id === batch.formulaRevisionId); if (!revision || revision.experimentId !== batch.experimentId) throw new Error(`Batch ${batch.id} references an invalid revision.`); for (const addition of batch.actualAdditions || []) { validateAddition(normalized, addition); const movement = normalized.stockMovements.find(item => item.id === addition.stockMovementId); if (!movement) throw new Error(`Batch addition ${addition.id} is missing a stock movement.`); if (movement.movementType !== 'consumption') throw new Error(`Batch addition ${addition.id} must link to a consumption movement.`); if (movement.batchId !== batch.id || movement.additionId !== addition.id) throw new Error(`Batch addition ${addition.id} and movement ${movement.id} do not reference each other.`); if (movement.materialId !== addition.materialId || movement.materialLotId !== addition.materialLotId) throw new Error(`Batch addition ${addition.id} and movement ${movement.id} disagree on material or lot.`); if (movement.quantity !== addition.amount || !unitsInterchangeable(movement.unit, addition.unit, movement.density ?? lotOf(normalized, addition.materialLotId).density)) throw new Error(`Batch addition ${addition.id} and movement ${movement.id} disagree on quantity or unit.`); } }
   for (const evaluation of normalized.evaluations) { if (!experimentIds.has(evaluation.experimentId)) throw new Error(`Evaluation ${evaluation.id} references an unknown experiment.`); if (evaluation.batchId) { const batch = normalized.batches.find(item => item.id === evaluation.batchId); if (!batch || batch.experimentId !== evaluation.experimentId) throw new Error(`Evaluation ${evaluation.id} references an invalid batch.`); if (evaluation.revisionId && evaluation.revisionId !== batch.formulaRevisionId) throw new Error(`Evaluation ${evaluation.id} revision does not match its batch.`); } if (evaluation.revisionId && (!revisionIds.has(evaluation.revisionId) || normalized.revisions.find(item => item.id === evaluation.revisionId).experimentId !== evaluation.experimentId)) throw new Error(`Evaluation ${evaluation.id} references an invalid revision.`); }
-  for (const movement of normalized.stockMovements) { normalizeMovement(normalized, movement, { allowGeneratedId: true }); if (movement.batchId && !batchIds.has(movement.batchId)) throw new Error(`Movement ${movement.id} references an unknown batch.`); if (movement.movementType === 'consumption' && (!movement.batchId || !movement.additionId)) throw new Error(`Consumption movement ${movement.id} must reference a batch and addition.`); if (movement.movementType === 'consumption') { const batch = normalized.batches.find(item => item.id === movement.batchId); const addition = (batch?.actualAdditions || []).find(item => item.id === movement.additionId); if (!addition) throw new Error(`Consumption movement ${movement.id} references an unknown batch addition.`); if (addition.stockMovementId !== movement.id) throw new Error(`Consumption movement ${movement.id} and addition ${addition.id} do not reference each other.`); } }
+  for (const movement of normalized.stockMovements) { normalizeMovement(normalized, movement, { allowGeneratedId: true, enforceOpening: false }); if (movement.batchId && !batchIds.has(movement.batchId)) throw new Error(`Movement ${movement.id} references an unknown batch.`); if (movement.movementType === 'consumption' && (!movement.batchId || !movement.additionId)) throw new Error(`Consumption movement ${movement.id} must reference a batch and addition.`); if (movement.movementType === 'consumption') { const batch = normalized.batches.find(item => item.id === movement.batchId); const addition = (batch?.actualAdditions || []).find(item => item.id === movement.additionId); if (!addition) throw new Error(`Consumption movement ${movement.id} references an unknown batch addition.`); if (addition.stockMovementId !== movement.id) throw new Error(`Consumption movement ${movement.id} and addition ${addition.id} do not reference each other.`); if (movement.quantity !== addition.amount || !unitsInterchangeable(movement.unit, addition.unit, movement.density ?? lotOf(normalized, addition.materialLotId).density)) throw new Error(`Consumption movement ${movement.id} and addition ${addition.id} disagree on quantity or unit.`); } }
   return normalized;
 }
 
@@ -198,6 +227,18 @@ export function saveState(state, storage = globalThis.localStorage) {
   try { storage.setItem(STORAGE_KEY, JSON.stringify(validated)); return validated; } catch { throw new Error('Could not save Atelier data in this browser. Keep this editor open and try again.'); }
 }
 
+// Whether two unit labels can describe the same measurement: identical labels
+// always, or convertible ones when a density bridges mass and volume. This
+// answers compatibility only — callers still require the recorded quantities
+// to match exactly, so a movement re-expressed as `1000 mg` against a `1 g`
+// addition is rejected rather than silently replaying a different balance.
+function unitsInterchangeable(fromUnit, toUnit, density) {
+  if (fromUnit === toUnit) return true;
+  try { convertQuantity(1, fromUnit, toUnit, { density }); return true; } catch { return false; }
+}
+
+function lotOf(state, lotId) { return findLot(state, lotId).lot; }
+
 function validateAddition(state, addition) {
   if (!addition?.id) throw new Error('Every batch addition needs an id.');
   const material = findMaterial(state, addition.materialId); const { material: owningMaterial, lot } = findLot(state, addition.materialLotId);
@@ -212,6 +253,24 @@ export function stockBalance(state, materialLotId, unit) {
 }
 
 export function stockBalances(state, materialLotId) { const { lot } = findLot(normalizeState(state), materialLotId); return { unit: lotUnit(lot), balance: stockBalance(state, materialLotId, lotUnit(lot)) }; }
+
+// A lot's opening is either established (a received amount or an explicit
+// opening movement) or unreconciled. In the unreconciled case the replayed
+// balance is only a floor — the sum of known consumption — and must never be
+// presented as a measured stock figure.
+export function stockStatus(state, materialLotId) {
+  const normalized = normalizeState(state); const { lot } = findLot(normalized, materialLotId); const unit = lotUnit(lot); const established = hasOpeningEstablished(normalized, materialLotId); const balance = stockBalance(state, materialLotId, unit);
+  return { materialLotId, unit, established, balance, reconciled: established, balanceKnown: established, note: established ? 'Opening balance established.' : 'Opening balance unknown; balance is a floor of recorded consumption only.' };
+}
+
+// Record the opening balance for a lot whose stock is still unreconciled. This
+// is the only sanctioned way out of the unreconciled state: the amount comes
+// from the user's own measurement, never derived from consumption history.
+export function reconcileLotOpening(state, materialLotId, { quantity, unit, density, occurredAt, note } = {}) {
+  const normalized = normalizeState(state); const { lot } = findLot(normalized, materialLotId);
+  if (hasOpeningEstablished(normalized, materialLotId)) throw new Error(`Lot "${materialLotId}" already has an established opening balance.`);
+  return addStockMovement(normalized, { id: `movement-opening-${materialLotId}`, materialId: lot.materialId, materialLotId, movementType: 'opening', quantity, unit: unit || lotUnit(lot), density: density ?? lot.density, occurredAt: occurredAt || lot.receivedAt || now(), note: note || 'Opening balance recorded during reconciliation.' });
+}
 
 export function addStockMovement(state, input) {
   const normalized = normalizeState(state); const movement = normalizeMovement(normalized, { ...input, id: input.id || id('movement') }, { allowGeneratedId: true });

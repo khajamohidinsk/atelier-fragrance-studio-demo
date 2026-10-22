@@ -1,7 +1,87 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bootstrapState, createMemoryAdapter, createLocalStorageAdapter } from '../src/domain/persistence.mjs';
-import { createInitialState, loadState } from '../src/domain/store.mjs';
+import { applyBackupImport, bootstrapState, createMemoryAdapter, createLocalStorageAdapter, persistState } from '../src/domain/persistence.mjs';
+import { addStockMovement, createInitialState, loadState, saveState, stockStatus } from '../src/domain/store.mjs';
+import { serializeBackup } from '../src/domain/backup.mjs';
+
+// A localStorage stand-in that records every write, so tests can prove that a
+// locked session never touches the saved bytes.
+function corruptStorage() {
+  const writes = [];
+  const saved = new Map();
+  return {
+    writes,
+    // Corrupt until something is written, which is what makes recovery work.
+    getItem: key => saved.has(key) ? saved.get(key) : '{not valid json',
+    setItem: (key, value) => { writes.push({ key, value }); saved.set(key, value); }
+  };
+}
+
+test('a corrupt saved state boots locked and performs no writes', () => {
+  const storage = corruptStorage();
+  const boot = bootstrapState(createLocalStorageAdapter(storage));
+  assert.equal(boot.locked, true);
+  assert.equal(storage.writes.length, 0, 'bootstrapping a corrupt state must not write');
+});
+
+test('edits are refused while locked and leave the corrupt bytes untouched', () => {
+  const storage = corruptStorage();
+  const adapter = createLocalStorageAdapter(storage);
+  const boot = bootstrapState(adapter);
+  const result = persistState(adapter, createInitialState(), { locked: boot.locked });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Import a valid backup and choose Replace/);
+  assert.equal(storage.writes.length, 0, 'a blocked edit must not overwrite unreadable data');
+});
+
+test('an explicit backup Replace recovers a locked session and unlocks it', () => {
+  const storage = corruptStorage();
+  const adapter = createLocalStorageAdapter(storage);
+  const boot = bootstrapState(adapter);
+  const backup = JSON.parse(serializeBackup(createInitialState()));
+  const result = applyBackupImport(adapter, backup, { mode: 'replace', currentState: boot.state, locked: boot.locked });
+  assert.equal(result.ok, true);
+  assert.equal(result.locked, false, 'a successful Replace must unlock the session');
+  assert.equal(storage.writes.length, 1, 'Replace writes exactly once');
+  // The recovered bytes must now load as valid state.
+  const reloaded = adapter.load();
+  assert.equal(reloaded.journalEntries.length, boot.state.journalEntries.length);
+});
+
+test('merge stays refused while locked even though Replace is allowed', () => {
+  const storage = corruptStorage();
+  const adapter = createLocalStorageAdapter(storage);
+  const boot = bootstrapState(adapter);
+  const backup = JSON.parse(serializeBackup(createInitialState()));
+  const result = applyBackupImport(adapter, backup, { mode: 'merge', currentState: boot.state, locked: boot.locked });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Use Replace to restore this backup/);
+  assert.equal(storage.writes.length, 0, 'a refused merge must not write');
+});
+
+test('an invalid backup is rejected and leaves the saved bytes untouched', () => {
+  const storage = corruptStorage();
+  const adapter = createLocalStorageAdapter(storage);
+  const boot = bootstrapState(adapter);
+  const result = applyBackupImport(adapter, { state: { materials: [null] } }, { mode: 'replace', currentState: boot.state, locked: boot.locked });
+  assert.equal(result.ok, false);
+  assert.equal(storage.writes.length, 0, 'an invalid backup must not be written');
+});
+
+test('batch consumption is blocked on an unreconciled lot through the app persistence path', () => {
+  // A migrated lot with no recorded received amount has no trustworthy opening.
+  const legacy = { ...createInitialState(), version: 1 };
+  delete legacy.stockMovements;
+  legacy.materials = legacy.materials.map(material => ({ ...material, lots: material.lots.map(({ receivedAmount, receivedUnit, ...lot }) => lot) }));
+  const state = loadState({ getItem: () => JSON.stringify(legacy) });
+  const status = stockStatus(state, 'lot-seed-1');
+  assert.equal(status.established, false);
+  assert.equal(status.balanceKnown, false);
+  // Historical consumption is preserved even though the lot is unreconciled.
+  assert.ok(state.stockMovements.some(movement => movement.movementType === 'consumption'));
+  // A new draw is refused until the opening is reconciled.
+  assert.throws(() => addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'consumption', quantity: 1, unit: 'g' }), /no established opening balance/);
+});
 
 test('memory persistence adapter supports injected load/save', () => {
   const state = createInitialState();

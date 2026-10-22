@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addRevision, addStockMovement, batchSummary, createInitialState, deleteCompanionEntry, deleteLot, deleteMaterial, exportState, importLegacyCompanionEntries, normalizeState, reverseStockMovement, saveState, stockBalance, updateCompanionEntry, updateJournalEntry, validateState } from '../src/domain/store.mjs';
+import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addRevision, addStockMovement, batchSummary, createInitialState, deleteCompanionEntry, deleteLot, deleteMaterial, exportState, importLegacyCompanionEntries, normalizeState, reconcileLotOpening, reverseStockMovement, saveState, stockBalance, stockStatus, updateCompanionEntry, updateJournalEntry, validateState } from '../src/domain/store.mjs';
 
 test('normalizeState never fills incomplete state with demo seed records', () => {
   const normalized = normalizeState({ version: 2 });
@@ -188,6 +188,65 @@ test('validateState rejects a consumption movement not mirrored by its batch add
   assert.throws(() => validateState(broken), /do not reference each other|unknown batch addition/);
 });
 
+test('validateState rejects a batch addition whose movement disagrees on quantity', () => {
+  const state = createInitialState();
+  // addition-seed-1 is 20 g; its movement-seed-1 says 25 g. IDs, batch, lot and
+  // unit all match, so only the quantity check catches this.
+  const broken = { ...state, stockMovements: state.stockMovements.map(item => item.id === 'movement-seed-1' ? { ...item, quantity: 25 } : item) };
+  assert.throws(() => validateState(broken), /disagree on quantity or unit/);
+});
+
+test('validateState rejects a batch addition whose movement disagrees on unit family without density', () => {
+  const state = createInitialState();
+  // Same numeric value, but mass (g) vs volume (mL) with no density recorded
+  // for lot-seed-1, so the units are not interchangeable.
+  const broken = { ...state, stockMovements: state.stockMovements.map(item => item.id === 'movement-seed-1' ? { ...item, unit: 'mL', density: undefined } : item) };
+  const lot = broken.materials.flatMap(m => m.lots).find(l => l.id === 'lot-seed-1');
+  delete lot.density;
+  assert.throws(() => validateState(broken), /disagree on quantity or unit/);
+});
+
+test('validateState rejects a movement re-expressed in an equivalent but different unit', () => {
+  const state = createInitialState();
+  // 20 g == 20000 mg is the same physical amount, but the reciprocal link
+  // records one exact quantity and unit. Silently re-expressing one side makes
+  // the two records disagree on what was written down, so it is rejected
+  // rather than left for a later reader to reconcile.
+  const converted = { ...state, stockMovements: state.stockMovements.map(item => item.id === 'movement-seed-1' ? { ...item, quantity: 20000, unit: 'mg' } : item) };
+  assert.throws(() => validateState(converted), /disagree on quantity or unit/);
+});
+
+test('validateState rejects two additions sharing one consumption movement', () => {
+  const state = createInitialState();
+  // addition-seed-2 already points at movement-seed-2. Redirect it to
+  // movement-seed-1 so both additions claim the same consumption.
+  const broken = { ...state, batches: state.batches.map(batch => ({ ...batch, actualAdditions: batch.actualAdditions.map(addition => addition.id === 'addition-seed-2' ? { ...addition, stockMovementId: 'movement-seed-1' } : addition) })) };
+  assert.throws(() => validateState(broken), /do not reference each other/);
+});
+
+test('normalizeMovement rejects a reversal whose reference belongs to another lot', () => {
+  const state = createInitialState();
+  // movement-seed-1 is a lot-seed-1 consumption. A reversal recorded against
+  // lot-seed-2 but pointing at that movement crosses lots, so it is refused.
+  assert.throws(
+    () => addStockMovement(state, { materialId: 'material-seed-2', materialLotId: 'lot-seed-2', movementType: 'reversal', quantity: 20, unit: 'g', referenceMovementId: 'movement-seed-1' }),
+    /same lot/
+  );
+});
+
+test('reverseStockMovement rejects an unknown movement id', () => {
+  const state = createInitialState();
+  assert.throws(() => reverseStockMovement(state, 'movement-does-not-exist'), /not found/);
+});
+
+test('normalizeMovement rejects a reversal referencing a movement that does not exist', () => {
+  const state = createInitialState();
+  assert.throws(
+    () => addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'reversal', quantity: 5, unit: 'g', referenceMovementId: 'movement-nope' }),
+    /must reference an existing stock movement/
+  );
+});
+
 test('validateState accepts a well-formed state after reciprocal checks', () => {
   const state = createInitialState();
   const validated = validateState(state);
@@ -237,4 +296,65 @@ test('evaluations reject foreign batches and mismatched revisions', () => {
   const batch = state.batches[0];
   assert.throws(() => addEvaluation(state, two.id, { batchId: batch.id }), /does not belong/);
   assert.throws(() => addEvaluation(state, one.id, { batchId: batch.id, revisionId: 'foreign-revision' }), /does not belong/);
+});
+
+function lotWithoutOpening() {
+  const state = createInitialState();
+  return { ...state, materials: state.materials.map(material => ({ ...material, lots: material.lots.map(lot => { const { receivedAmount, receivedUnit, ...rest } = lot; return rest; }) })), stockMovements: state.stockMovements.filter(item => item.movementType !== 'opening') };
+}
+
+test('a lot with no trustworthy opening reports an unreconciled status, not a balance', () => {
+  const state = lotWithoutOpening();
+  const status = stockStatus(state, 'lot-seed-1');
+  assert.equal(status.established, false);
+  assert.equal(status.balanceKnown, false);
+  // The replay is a floor of recorded consumption only, never a stock figure.
+  assert.ok(status.balance < 0, `expected a negative floor, got ${status.balance}`);
+  assert.match(status.note, /floor/);
+});
+
+test('a lot with an established opening reports a reconciled balance', () => {
+  const state = createInitialState();
+  const status = stockStatus(state, 'lot-seed-1');
+  assert.equal(status.established, true);
+  assert.equal(status.balanceKnown, true);
+  // Seed records 100 g opening and 20 g consumption.
+  assert.ok(Math.abs(status.balance - 80) < 1e-9, `expected 80, got ${status.balance}`);
+  assert.match(status.note, /established/);
+});
+
+test('consumption is blocked on an unreconciled lot until its opening is recorded', () => {
+  const state = lotWithoutOpening();
+  assert.throws(
+    () => addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'consumption', quantity: 1, unit: 'g', batchId: 'batch-seed-1', additionId: 'addition-seed-1' }),
+    /no established opening balance/
+  );
+});
+
+test('non-consumption movements stay permitted on an unreconciled lot', () => {
+  const state = lotWithoutOpening();
+  // A receipt is exactly how a user records stock they then know about.
+  const next = addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'receipt', quantity: 50, unit: 'g', note: 'Found the bottle' });
+  assert.ok(next.stockMovements.some(item => item.movementType === 'receipt'));
+});
+
+test('reconcileLotOpening records a user-supplied opening and unblocks consumption', () => {
+  let state = lotWithoutOpening();
+  state = reconcileLotOpening(state, 'lot-seed-1', { quantity: 60, unit: 'g' });
+  const status = stockStatus(state, 'lot-seed-1');
+  assert.equal(status.established, true);
+  assert.equal(status.balanceKnown, true);
+  // The fixture already carries 20 g of legacy consumption, so a 60 g opening
+  // replays to 40 g rather than the raw opening figure.
+  assert.ok(Math.abs(status.balance - 40) < 1e-9, `expected 40, got ${status.balance}`);
+  // Consumption now proceeds through the real batch workflow: 40 g on hand
+  // minus a further 5 g draw. Before reconciliation this same batch would have
+  // been refused for having no established opening.
+  const after = addBatch(state, 'experiment-seed-1', { formulaRevisionId: 'revision-seed-1', plannedAmount: 5, unit: 'g', actualAdditions: [{ materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 5, unit: 'g', concentration: 100 }] });
+  assert.ok(Math.abs(stockBalance(after, 'lot-seed-1') - 35) < 1e-9, `expected 35, got ${stockBalance(after, 'lot-seed-1')}`);
+});
+
+test('reconcileLotOpening refuses to overwrite an established opening', () => {
+  const state = createInitialState();
+  assert.throws(() => reconcileLotOpening(state, 'lot-seed-1', { quantity: 999, unit: 'g' }), /already has an established opening/);
 });

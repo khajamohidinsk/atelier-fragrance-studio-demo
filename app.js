@@ -1,7 +1,7 @@
 import { calculateDilution } from './src/domain/calculations.mjs';
 import { addBatch, addEvaluation, addExperiment, addJournalEntry, addRevision, addStockMovement, batchSummary, importLegacyCompanionEntries, stockBalance, updateJournalEntry } from './src/domain/store.mjs';
-import { createLocalStorageAdapter, bootstrapState } from './src/domain/persistence.mjs';
-import { mergeBackup, parseBackup, replaceWithBackup, serializeBackup } from './src/domain/backup.mjs';
+import { createLocalStorageAdapter, bootstrapState, persistState, applyBackupImport } from './src/domain/persistence.mjs';
+import { parseBackup, serializeBackup } from './src/domain/backup.mjs';
 import { compareRevisions } from './src/domain/comparison.mjs';
 import { initScentCompanion } from './src/ui/companion.mjs';
 
@@ -26,17 +26,13 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&a
 const formatDate = value => value ? new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value)) : 'Date not recorded';
 const toast = message => { const node = $('#toast'); node.textContent = message; node.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => node.classList.remove('show'), 2200); };
 const persist = (next, { allowLocked = false } = {}) => {
-  if (storageLocked && !allowLocked) { toast('Your saved Atelier data could not be loaded, so editing is disabled to protect it. Import a valid backup and choose Replace to recover.'); return false; }
-  try {
-    state = persistence.save(next);
-    storageLocked = false;
-    renderAll();
-    companionApi?.render();
-    return true;
-  } catch (error) {
-    toast(error.message);
-    return false;
-  }
+  const result = persistState(persistence, next, { locked: storageLocked, allowLocked });
+  if (!result.ok) { toast(result.error); return false; }
+  state = result.state;
+  storageLocked = false;
+  renderAll();
+  companionApi?.render();
+  return true;
 };
 function openDialog(id) { $( `#${id}`).showModal(); }
 function closeDialog(id) { $( `#${id}`).close(); }
@@ -116,7 +112,7 @@ $('#record-dialog').addEventListener('submit', event => { event.preventDefault()
 $('#export-button').addEventListener('click', () => { const blob = new Blob([serializeBackup(state)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'atelier-scent-lab-backup-v1.json'; anchor.click(); URL.revokeObjectURL(url); toast('Versioned backup exported'); });
 $('#import-button').addEventListener('click', () => $('#import-file').click());
 $('#import-file').addEventListener('change', async event => { const file = event.target.files?.[0]; if (!file) return; try { pendingBackup = parseBackup(await file.text()); const recordCount = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'stockMovements', 'companionEntries'].reduce((sum, key) => sum + (pendingBackup.state[key]?.length || 0), 0); $('#import-preview').textContent = `This backup is schema ${pendingBackup.schemaVersion}, exported ${pendingBackup.exportedAt || 'at an unknown time'}, and contains ${recordCount} records. Choose merge to preserve current records and add missing IDs, or replace to restore the backup as the current local state.`; openDialog('import-dialog'); } catch (error) { toast(error.message); } finally { event.target.value = ''; } });
-function finishImport(mode) { if (!pendingBackup) return; try { if (mode === 'merge' && storageLocked) { toast('Merge needs your current records, which could not be loaded. Use Replace to restore this backup instead.'); return; } const result = mode === 'merge' ? mergeBackup(state, pendingBackup.state) : { state: replaceWithBackup(pendingBackup.state), imported: pendingBackup.state.journalEntries.length, conflicts: [] }; if (persist(result.state, { allowLocked: mode === 'replace' })) { closeDialog('import-dialog'); pendingBackup = null; toast(mode === 'merge' ? `Backup merged; ${result.imported} records added${result.conflicts.length ? `, ${result.conflicts.length} conflicts kept local` : ''}.` : 'Backup restored'); } } catch (error) { toast(error.message); } }
+function finishImport(mode) { const result = applyBackupImport(persistence, pendingBackup, { mode, currentState: state, locked: storageLocked }); if (!result.ok) { if (pendingBackup && result.error !== 'No backup is pending.') toast(result.error); return; } state = result.state; storageLocked = result.locked; closeDialog('import-dialog'); pendingBackup = null; renderAll(); companionApi?.render(); toast(mode === 'merge' ? `Backup merged; ${result.imported} records added${result.conflicts.length ? `, ${result.conflicts.length} conflicts kept local` : ''}.` : 'Backup restored'); }
 $('#import-merge').addEventListener('click', () => finishImport('merge'));
 $('#import-replace').addEventListener('click', () => finishImport('replace'));
 
