@@ -29,6 +29,37 @@ test('backup merge imports missing records but reports conflicting IDs without o
   assert.ok(result.state.journalEntries.some(item => item.id === 'new-entry'));
 });
 
+test('backup envelope rejects missing or invalid schema versions', () => {
+  assert.throws(() => parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, state: {} })), /schema version/);
+  assert.throws(() => parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: '2', state: {} })), /schema version/);
+  assert.throws(() => parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: 0, state: {} })), /schema version/);
+  assert.throws(() => parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: 1.5, state: {} })), /schema version/);
+});
+
+test('backup envelope rejects a non-object state payload', () => {
+  assert.throws(() => parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: 2, state: [] })), /state payload/);
+  assert.throws(() => parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: 2, state: null })), /state payload/);
+  assert.throws(() => parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: 2, state: 'oops' })), /state payload/);
+});
+
+test('parseBackup surfaces a corrupt state payload instead of fabricating records', () => {
+  const envelope = { format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: 2, state: { materials: [null] } };
+  assert.throws(() => parseBackup(JSON.stringify(envelope)), /Material records/);
+});
+
+test('merge rejects corrupt backups before touching current data', () => {
+  const current = createInitialState();
+  const duplicate = createInitialState();
+  duplicate.journalEntries = [
+    { ...duplicate.journalEntries[0], title: 'Conflicting' },
+    { ...duplicate.journalEntries[0], title: 'Duplicate' }
+  ];
+  assert.throws(() => mergeBackup(current, duplicate), /Duplicate or missing/);
+  const noId = createInitialState();
+  noId.journalEntries = [{ title: 'No id', observedAt: '2026-10-22T00:00:00.000Z' }];
+  assert.throws(() => mergeBackup(current, noId), /Duplicate or missing/);
+});
+
 test('empty state can be exported and imported', () => {
   const empty = createInitialState();
   for (const key of ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'stockMovements', 'companionEntries']) empty[key] = [];

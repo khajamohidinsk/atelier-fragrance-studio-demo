@@ -15,8 +15,9 @@ export function validateBackupEnvelope(payload) {
   if (!payload || typeof payload !== 'object') throw new Error('Backup must be a JSON object.');
   if (payload.format !== BACKUP_FORMAT) throw new Error('This file is not an Atelier Scent Lab backup.');
   if (payload.backupVersion !== BACKUP_VERSION) throw new Error(`Unsupported backup format version ${payload.backupVersion}.`);
+  if (!Number.isInteger(payload.schemaVersion) || payload.schemaVersion < 1) throw new Error('Backup is missing a valid schema version.');
   if (payload.schemaVersion > CURRENT_SCHEMA_VERSION) throw new Error(`Backup uses unsupported future schema version ${payload.schemaVersion}.`);
-  if (!payload.state || typeof payload.state !== 'object') throw new Error('Backup is missing its state payload.');
+  if (!payload.state || typeof payload.state !== 'object' || Array.isArray(payload.state)) throw new Error('Backup is missing its state payload.');
   return payload;
 }
 
@@ -39,9 +40,10 @@ export function mergeBackup(currentState, backupState) {
     const records = [...(current[collection] || [])];
     const byId = new Map(records.map(record => [recordKey(record), record]));
     for (const record of incoming[collection] || []) {
-      const existing = byId.get(recordKey(record));
-      if (!existing) { records.push(record); byId.set(recordKey(record), record); continue; }
-      if (JSON.stringify(existing) !== JSON.stringify(record)) conflicts.push({ collection, id: record.id, reason: 'conflicting-record' });
+      const key = recordKey(record);
+      const existing = byId.get(key);
+      if (!existing) { records.push(record); byId.set(key, record); continue; }
+      if (JSON.stringify(existing) !== JSON.stringify(record)) conflicts.push({ collection, id: key, reason: 'conflicting-record' });
     }
     merged[collection] = records;
   }
