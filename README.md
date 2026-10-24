@@ -102,6 +102,10 @@ Briefing playback uses the browser's built-in `speechSynthesis` / `SpeechSynthes
 
 The current persistence boundary is browser-local `localStorage`: it survives reloads in the same browser profile but has no cloud backup and does not synchronize across browser profiles, devices, or users. The pure store operations (`addCompanionEntry`, `updateCompanionEntry`, `deleteCompanionEntry`, and `importLegacyCompanionEntries`) are the adapter surface for a future authenticated Ravenn persistence service.
 
+### Browser acceptance tests
+
+The repeatable B6 browser suite is `tests/browser/b6-portability.spec.mjs`. It uses Playwright with isolated browser contexts, real JSON files, the hidden import file input via `setInputFiles()`, actual UI export downloads, reload readback, duplicate-safe merge, conflict preview, replacement recovery, invalid-file safety, and Companion/batch/evaluation round trips. Run `npm run test:browser`; the Playwright Chromium browser is installed with `npx playwright install chromium` when needed. The suite uses synthetic fixture data only and does not require AI configuration, credentials, network services, or a database.
+
 ### Free local AI with Ollama (no API key)
 
 The server supports Ollama's native local chat endpoint. Install and start Ollama, and ensure the model is available locally. For the current model already used in this project, `qwen2.5-coder:7b`, start the Atelier server in PowerShell like this:
