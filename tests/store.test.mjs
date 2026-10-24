@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addMaterial, addMaterialLot, addRevision, addStockMovement, batchSummary, compareBatchToPlan, createInitialState, deleteCompanionEntry, deleteLot, deleteMaterial, exportState, importLegacyCompanionEntries, inventorySummary, normalizeState, reconcileLot, reconcileLotOpening, reverseStockMovement, saveState, stockBalance, stockStatus, updateCompanionEntry, updateJournalEntry, validateState } from '../src/domain/store.mjs';
+import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addMaterial, addMaterialLot, addRevision, addStockMovement, batchSummary, compareBatchToPlan, createInitialState, deleteCompanionEntry, deleteLot, deleteMaterial, exportState, importLegacyCompanionEntries, inventorySummary, normalizeState, recordSensoryEvaluation, reconcileLot, reconcileLotOpening, reverseStockMovement, saveState, stockBalance, stockStatus, updateCompanionEntry, updateJournalEntry, validateState } from '../src/domain/store.mjs';
 
 test('normalizeState never fills incomplete state with demo seed records', () => {
   const normalized = normalizeState({ version: 2 });
@@ -254,6 +254,24 @@ test('validateState accepts a well-formed state after reciprocal checks', () => 
   assert.ok(validated.stockMovements.length > 0);
 });
 
+test('validateState rejects an imported established-lot ledger that replays below zero', () => {
+  const state = createInitialState();
+  const broken = {
+    ...state,
+    batches: state.batches.map(batch => ({ ...batch, actualAdditions: batch.actualAdditions.map(addition => addition.id === 'addition-seed-1' ? { ...addition, amount: 120 } : addition) })),
+    stockMovements: state.stockMovements.map(movement => movement.id === 'movement-seed-1' ? { ...movement, quantity: 120 } : movement)
+  };
+  assert.throws(() => validateState(broken), /negative stock balance/);
+});
+
+test('validateState rejects reversal direction and ordering contradictions', () => {
+  const state = createInitialState();
+  const brokenDirection = { ...state, stockMovements: [...state.stockMovements, { id: 'reversal-bad-direction', materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'reversal', quantity: 20, unit: 'g', direction: 'decrease', referenceMovementId: 'movement-seed-1', occurredAt: '2026-10-11T09:30:00.000Z', note: 'Bad direction' }] };
+  assert.throws(() => validateState(brokenDirection), /direction must exactly invert/);
+  const brokenOrder = { ...state, stockMovements: [...state.stockMovements, { id: 'reversal-before-reference', materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'reversal', quantity: 20, unit: 'g', referenceMovementId: 'movement-seed-1', occurredAt: '2026-10-01T00:00:00.000Z', note: 'Bad ordering' }] };
+  assert.throws(() => validateState(brokenOrder), /cannot precede/);
+});
+
 test('relationship helpers reject cross-experiment references and preserve reverse links', () => {
   let state = { ...createInitialState(), experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [], stockMovements: createInitialState().stockMovements.slice(0, 2) };
   state = addExperiment(state, { title: 'First', objective: 'First' });
@@ -357,6 +375,37 @@ test('reconcileLotOpening records a user-supplied opening and unblocks consumpti
 test('reconcileLotOpening refuses to overwrite an established opening', () => {
   const state = createInitialState();
   assert.throws(() => reconcileLotOpening(state, 'lot-seed-1', { quantity: 999, unit: 'g' }), /already has an established opening/);
+});
+
+test('sensory journal records multiple traceable intervals with distinct evidence fields', () => {
+  let state = batchFixture();
+  state = addExperiment(state, { title: 'Maturation journal', objective: 'Track development' });
+  const experiment = state.experiments[0];
+  state = addRevision(state, experiment.id, { ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 1, unit: 'g' }] });
+  const revision = state.revisions[0];
+  state = addBatch(state, experiment.id, { batchCode: 'BATCH-JOURNAL-1', formulaRevisionId: revision.id, plannedAmount: 1, unit: 'g', actualAdditions: [{ materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 1, unit: 'g', concentration: 100 }] });
+  const batch = state.batches[0];
+  state = recordSensoryEvaluation(state, experiment.id, { batchId: batch.id, evaluatedAt: '2026-10-24T10:00:00.000Z', elapsedMinutes: 15, intervalLabel: 'Opening', medium: 'Blotter', environment: '22 C studio', conditions: 'One spray', descriptors: ['green'], subjectiveNotes: 'Bright and sharp', predictedOutcome: 'Expected softening', provenance: 'subjective' });
+  state = recordSensoryEvaluation(state, experiment.id, { batchId: batch.id, evaluatedAt: '2026-10-25T10:00:00.000Z', elapsedMinutes: 1455, intervalLabel: '24 hours', medium: 'Blotter', environment: '22 C studio', conditions: 'One spray', descriptors: ['woody'], measuredResults: 'Timed blotter check: present', isMeasured: true, longevityObservation: 'Present at 24 h', longevityMethod: 'Timed blotter check', projectionObservation: 'Close', projectionMethod: 'Observer estimate', conclusions: 'Recorded persistence only', nextSteps: 'Repeat on skin' });
+  assert.equal(state.evaluations.length, 2);
+  assert.deepEqual(state.evaluations.map(item => item.intervalLabel), ['24 hours', 'Opening']);
+  assert.equal(state.evaluations[0].provenance, 'measured');
+  assert.equal(state.evaluations[1].provenance, 'subjective');
+  assert.equal(state.evaluations[0].batchId, batch.id);
+  assert.equal(state.evaluations[0].revisionId, revision.id);
+});
+
+test('sensory journal rejects missing physical batch, mismatched revision, and measured-without-results records', () => {
+  let state = batchFixture();
+  state = addExperiment(state, { title: 'Evaluation validation', objective: 'Reject invalid links' });
+  const experiment = state.experiments[0];
+  state = addRevision(state, experiment.id, { ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 1, unit: 'g' }] });
+  const revision = state.revisions[0];
+  state = addBatch(state, experiment.id, { formulaRevisionId: revision.id, plannedAmount: 1, unit: 'g', actualAdditions: [{ materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 1, unit: 'g', concentration: 100 }] });
+  const batch = state.batches[0];
+  assert.throws(() => recordSensoryEvaluation(state, experiment.id, { intervalLabel: 'Opening' }), /physical batch is required/);
+  assert.throws(() => recordSensoryEvaluation(state, experiment.id, { batchId: batch.id, revisionId: 'wrong-revision', intervalLabel: 'Opening' }), /must match/);
+  assert.throws(() => recordSensoryEvaluation(state, experiment.id, { batchId: batch.id, intervalLabel: 'Opening', isMeasured: true }), /measured results/);
 });
 
 test('returns require explicit confirmation and increase the lot balance', () => {

@@ -108,8 +108,12 @@ function normalizeMovement(state, input, { allowGeneratedId = false, enforceOpen
   if (movementType === 'reversal') {
     const reference = state.stockMovements.find(item => item.id === input.referenceMovementId);
     if (!reference) throw new Error('A reversal must reference an existing stock movement.');
+    if (reference.id === input.id) throw new Error('A reversal cannot reference itself.');
+    if (reference.movementType === 'reversal') throw new Error('A reversal cannot reverse another reversal.');
     if (reference.materialLotId !== materialLotId) throw new Error('A reversal must reference a movement from the same lot.');
-    input = { ...input, direction: movementDirection(reference) > 0 ? 'decrease' : 'increase' };
+    const direction = movementDirection(reference) > 0 ? 'decrease' : 'increase';
+    if (input.direction !== undefined && input.direction !== direction) throw new Error('A reversal direction must exactly invert its reference movement.');
+    input = { ...input, direction };
   }
   if ((movementType === 'correction' || movementType === 'reversal') && !input.referenceMovementId) throw new Error(`${movementType} movements require referenceMovementId.`);
   if (movementType === 'correction') {
@@ -125,6 +129,10 @@ function normalizeMovement(state, input, { allowGeneratedId = false, enforceOpen
   if (movementType === 'reversal' && state.stockMovements.some(item => item.movementType === 'reversal' && item.referenceMovementId === input.referenceMovementId && item.id !== input.id)) throw new Error('A stock movement can only be reversed once.');
   const createdAt = input.occurredAt || now();
   if (Number.isNaN(Date.parse(createdAt))) throw new Error('Movement timestamp is invalid.');
+  if ((movementType === 'reversal' || movementType === 'correction') && input.referenceMovementId) {
+    const reference = state.stockMovements.find(item => item.id === input.referenceMovementId);
+    if (reference && Date.parse(createdAt) < Date.parse(reference.occurredAt)) throw new Error(`${movementType} timestamp cannot precede its reference movement.`);
+  }
   return {
     id: input.id || (allowGeneratedId ? id('movement') : undefined),
     materialId: material.id,
@@ -251,8 +259,32 @@ export function validateState(state) {
   for (const revision of normalized.revisions) { if (!experimentIds.has(revision.experimentId)) throw new Error(`Revision ${revision.id} references an unknown experiment.`); if (revision.supersedesRevisionId && (!revisionIds.has(revision.supersedesRevisionId) || normalized.revisions.find(item => item.id === revision.supersedesRevisionId).experimentId !== revision.experimentId)) throw new Error(`Revision ${revision.id} has an invalid predecessor.`); for (const ingredient of revision.ingredients || []) { if (!materialIds.has(ingredient.materialId)) throw new Error(`Revision ${revision.id} references an unknown material.`); if (ingredient.lotId && !lotIds.has(ingredient.lotId)) throw new Error(`Revision ${revision.id} references an unknown lot.`); } }
   const batchCodes = new Set(); const idempotencyKeys = new Set();
   for (const batch of normalized.batches) { if (!experimentIds.has(batch.experimentId)) throw new Error(`Batch ${batch.id} references an unknown experiment.`); const revision = normalized.revisions.find(item => item.id === batch.formulaRevisionId); if (!revision || revision.experimentId !== batch.experimentId) throw new Error(`Batch ${batch.id} references an invalid revision.`); positiveFinite(batch.plannedAmount, `Batch ${batch.id} planned amount`); validateUnit(batch.unit); if (!batch.batchCode || batchCodes.has(batch.batchCode)) throw new Error(`Duplicate or missing batch code for ${batch.id}.`); batchCodes.add(batch.batchCode); if (batch.idempotencyKey) { if (idempotencyKeys.has(batch.idempotencyKey)) throw new Error(`Duplicate batch idempotency key for ${batch.id}.`); idempotencyKeys.add(batch.idempotencyKey); } if (batch.mixingDate && Number.isNaN(Date.parse(batch.mixingDate))) throw new Error(`Batch ${batch.id} mixing date is invalid.`); for (const addition of batch.actualAdditions || []) { validateAddition(normalized, addition); if (addition.addedAt && Number.isNaN(Date.parse(addition.addedAt))) throw new Error(`Batch addition ${addition.id} timestamp is invalid.`); const movement = normalized.stockMovements.find(item => item.id === addition.stockMovementId); if (!movement) throw new Error(`Batch addition ${addition.id} is missing a stock movement.`); if (movement.movementType !== 'consumption') throw new Error(`Batch addition ${addition.id} must link to a consumption movement.`); if (movement.batchId !== batch.id || movement.additionId !== addition.id) throw new Error(`Batch addition ${addition.id} and movement ${movement.id} do not reference each other.`); if (movement.materialId !== addition.materialId || movement.materialLotId !== addition.materialLotId) throw new Error(`Batch addition ${addition.id} and movement ${movement.id} disagree on material or lot.`); if (movement.quantity !== addition.amount || !unitsInterchangeable(movement.unit, addition.unit, movement.density ?? lotOf(normalized, addition.materialLotId).density)) throw new Error(`Batch addition ${addition.id} and movement ${movement.id} disagree on quantity or unit.`); } }
+  for (const material of normalized.materials) for (const lot of material.lots || []) {
+    if (!hasOpeningEstablished(normalized, lot.id)) continue;
+    const unit = lotUnit(lot) || normalized.stockMovements.find(item => item.materialLotId === lot.id)?.unit;
+    if (unit && stockBalance(normalized, lot.id, unit) < -1e-9) throw new Error(`Lot ${lot.id} ledger replay would produce a negative stock balance.`);
+  }
   for (const evaluation of normalized.evaluations) { if (!experimentIds.has(evaluation.experimentId)) throw new Error(`Evaluation ${evaluation.id} references an unknown experiment.`); if (evaluation.batchId) { const batch = normalized.batches.find(item => item.id === evaluation.batchId); if (!batch || batch.experimentId !== evaluation.experimentId) throw new Error(`Evaluation ${evaluation.id} references an invalid batch.`); if (evaluation.revisionId && evaluation.revisionId !== batch.formulaRevisionId) throw new Error(`Evaluation ${evaluation.id} revision does not match its batch.`); } if (evaluation.revisionId && (!revisionIds.has(evaluation.revisionId) || normalized.revisions.find(item => item.id === evaluation.revisionId).experimentId !== evaluation.experimentId)) throw new Error(`Evaluation ${evaluation.id} references an invalid revision.`); }
   for (const movement of normalized.stockMovements) { normalizeMovement(normalized, movement, { allowGeneratedId: true, enforceOpening: false }); if (movement.batchId && !batchIds.has(movement.batchId)) throw new Error(`Movement ${movement.id} references an unknown batch.`); if (movement.movementType === 'consumption' && (!movement.batchId || !movement.additionId)) throw new Error(`Consumption movement ${movement.id} must reference a batch and addition.`); if (movement.movementType === 'consumption') { const batch = normalized.batches.find(item => item.id === movement.batchId); const addition = (batch?.actualAdditions || []).find(item => item.id === movement.additionId); if (!addition) throw new Error(`Consumption movement ${movement.id} references an unknown batch addition.`); if (addition.stockMovementId !== movement.id) throw new Error(`Consumption movement ${movement.id} and addition ${addition.id} do not reference each other.`); if (movement.quantity !== addition.amount || !unitsInterchangeable(movement.unit, addition.unit, movement.density ?? lotOf(normalized, addition.materialLotId).density)) throw new Error(`Consumption movement ${movement.id} and addition ${addition.id} disagree on quantity or unit.`); } }
+  for (const evaluation of normalized.evaluations) {
+    if (!evaluation.id || !evaluation.evaluatedAt || Number.isNaN(Date.parse(evaluation.evaluatedAt))) throw new Error(`Evaluation ${evaluation.id || 'unknown'} has an invalid evaluation timestamp.`);
+    if (evaluation.elapsedMinutes !== undefined) nonNegativeFinite(evaluation.elapsedMinutes, `Evaluation ${evaluation.id} elapsed time`);
+    if (evaluation.batchId) {
+      const batch = normalized.batches.find(item => item.id === evaluation.batchId);
+      if (!batch) throw new Error(`Evaluation ${evaluation.id} references an unknown batch.`);
+      if (batch.experimentId !== evaluation.experimentId) throw new Error(`Evaluation ${evaluation.id} batch belongs to another experiment.`);
+      if (!evaluation.revisionId) throw new Error(`Evaluation ${evaluation.id} must preserve the batch formula revision.`);
+      if (evaluation.revisionId !== batch.formulaRevisionId) throw new Error(`Evaluation ${evaluation.id} revision does not match its batch.`);
+    }
+    if (evaluation.revisionId) {
+      const revision = normalized.revisions.find(item => item.id === evaluation.revisionId);
+      if (!revision || revision.experimentId !== evaluation.experimentId) throw new Error(`Evaluation ${evaluation.id} references an invalid revision.`);
+    }
+    if (evaluation.isMeasured && !String(evaluation.measuredResults || '').trim()) throw new Error(`Measured evaluation ${evaluation.id} must include measured results.`);
+    if (evaluation.provenance === 'measured' && !evaluation.isMeasured) throw new Error(`Evaluation ${evaluation.id} has measured provenance but is not marked measured.`);
+    if (evaluation.provenance === 'ai-generated' && !Array.isArray(evaluation.aiSuggestions)) throw new Error(`AI-generated evaluation ${evaluation.id} must keep suggestions in an array.`);
+    if (evaluation.scores && typeof evaluation.scores !== 'object') throw new Error(`Evaluation ${evaluation.id} scores must be an object.`);
+  }
   return normalized;
 }
 
@@ -458,6 +490,18 @@ function plannedIngredientKey(ingredient) { return ingredient.lotId ? `${ingredi
 function convertForBatch(state, amount, unit, targetUnit, lotId, density) {
   const lotDensity = lotId ? lotOf(state, lotId).density : undefined;
   return convertQuantity(amount, unit, targetUnit, { density: density ?? lotDensity });
+}
+
+export function recordSensoryEvaluation(state, experimentId, input) {
+  const normalized = normalizeState(state); const experiment = normalized.experiments.find(item => item.id === experimentId); if (!experiment) throw new Error('Experiment not found.');
+  if (!input.batchId) throw new Error('A physical batch is required for a sensory evaluation.');
+  const batch = normalized.batches.find(item => item.id === input.batchId); if (!batch || batch.experimentId !== experimentId) throw new Error('Evaluation batch does not belong to the experiment.');
+  const revisionId = input.revisionId || batch.formulaRevisionId; if (revisionId !== batch.formulaRevisionId) throw new Error('Evaluation revision must match the physical batch revision.');
+  const measured = input.isMeasured === true || Boolean(String(input.measuredResults || '').trim());
+  const provenance = input.provenance || (measured ? 'measured' : 'subjective');
+  const evaluation = { id: input.id || id('evaluation'), experimentId, batchId: batch.id, revisionId, evaluatedAt: input.evaluatedAt || now(), intervalLabel: input.intervalLabel || 'Unlabelled interval', elapsedMinutes: input.elapsedMinutes, medium: input.medium || '', environment: input.environment || '', conditions: input.conditions || '', descriptors: Array.isArray(input.descriptors) ? input.descriptors : [], subjectiveNotes: input.subjectiveNotes || '', measuredResults: input.measuredResults || '', isMeasured: measured, longevityObservation: input.longevityObservation || '', longevityMethod: input.longevityMethod || '', projectionObservation: input.projectionObservation || '', projectionMethod: input.projectionMethod || '', predictedOutcome: input.predictedOutcome || '', conclusions: input.conclusions || '', nextSteps: input.nextSteps || '', aiSuggestions: Array.isArray(input.aiSuggestions) ? input.aiSuggestions : [], scores: input.scores || {}, provenance };
+  const next = { ...normalized, evaluations: [evaluation, ...normalized.evaluations], experiments: normalized.experiments.map(item => item.id === experimentId ? { ...item, evaluationIds: [...new Set([...(item.evaluationIds || []), evaluation.id])], status: 'Evaluated' } : item) };
+  return validateState(next);
 }
 
 export function compareBatchToPlan(state, batchId) {
