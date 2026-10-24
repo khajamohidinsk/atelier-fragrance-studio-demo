@@ -1,13 +1,19 @@
-/** @typedef {{ id: string, title: string, observedAt: string, text?: string, tags?: Tag[], evaluations?: SensoryEvaluation[], experimentId?: string, attachments?: Attachment[] }} JournalEntry */
-/** @typedef {{ id: string, name: string, status?: 'planned'|'running'|'complete'|'archived', formulaRevisionIds: string[], journalEntryIds?: string[], batchIds?: string[], tags?: Tag[] }} Experiment */
-/** @typedef {{ id: string, formulaId: string, revision: number, ingredients: FormulaIngredient[], createdAt: string, supersedesRevisionId?: string, notes?: string }} FormulaRevision */
-/** @typedef {{ materialId: string, quantity: number, unit: string, concentration?: number, percentage?: number }} FormulaIngredient */
-/** @typedef {{ id: string, name: string, kind?: string, defaultUnit?: string, density?: number, supplier?: string }} Material */
-/** @typedef {{ id: string, materialId: string, lotCode: string, receivedAt?: string, density?: number, notes?: string }} MaterialLot */
-/** @typedef {{ id: string, experimentId: string, formulaRevisionId: string, plannedAmount: number, unit: string, actualAdditions: ActualAddition[], createdAt: string, completedAt?: string }} Batch */
-/** @typedef {{ materialId: string, materialLotId?: string, amount: number, unit: string, concentration?: number, addedAt?: string }} ActualAddition */
+/** @typedef {'Draft'|'Mixed'|'Maturing'|'Evaluated'|'Archived'} ExperimentStatus */
+/** @typedef {'opening'|'receipt'|'return'|'adjustment'|'consumption'|'wastage'|'correction'|'reversal'} StockMovementType */
+/** @typedef {{ id: string, materialId: string, lotCode?: string, receivedAt?: string, receivedAmount?: number, receivedUnit?: string, remainingAmount?: number, remainingUnit?: string, supplier?: string, productReference?: string, density?: number, purity?: number, stockConcentration?: number, expiryDate?: string, retestDate?: string, lowStockThreshold?: number, reconciliation?: 'established'|'unreconciled', notes?: string }} MaterialLot */
+/** @typedef {{ id: string, name: string, canonicalIdentity?: string, supplier?: string, productReference?: string, safetyReference?: string, storageNotes?: string, lots: MaterialLot[] }} Material */
+/** @typedef {{ id: string, materialId: string, materialLotId: string, movementType: StockMovementType, quantity: number, unit: string, direction?: 'increase'|'decrease', density?: number, verified?: boolean, confirmedReturn?: boolean, occurredAt: string, batchId?: string, additionId?: string, referenceMovementId?: string, note?: string, provenance?: 'recorded'|'migration'|'synthetic-demo' }} StockMovement */
+/** @typedef {{ id: string, materialId: string, materialLotId: string, amount: number, unit: string, concentration?: number, density?: number, addedAt?: string, stockMovementId: string }} ActualAddition */
+/** @typedef {{ materialId: string, lotId?: string, materialName?: string, quantity: number, unit: string, stockConcentration?: number, role?: string }} FormulaIngredient */
+/** @typedef {{ id: string, experimentId: string, title: string, objective: string, status: ExperimentStatus, createdAt: string, formulaRevisionIds: string[], journalEntryIds: string[], batchIds: string[], evaluationIds: string[], tags: string[] }} Experiment */
+/** @typedef {{ id: string, experimentId: string, revision: number, ingredients: FormulaIngredient[], createdAt: string, supersedesRevisionId: string|null, notes?: string, objective?: string }} FormulaRevision */
+/** @typedef {{ id: string, batchCode: string, experimentId: string, formulaRevisionId: string, plannedAmount: number, unit: string, actualAdditions: ActualAddition[], createdAt: string, procedureNotes?: string, idempotencyKey?: string }} Batch */
+/** @typedef {{ id: string, experimentId: string, batchId?: string, revisionId?: string, evaluatedAt: string, intervalLabel?: string, medium?: string, environment?: string, descriptors?: string[], subjectiveNotes?: string, measuredResults?: string, isMeasured: boolean, provenance?: 'recorded'|'subjective'|'measured'|'synthetic-demo' }} SensoryEvaluation */
+/** @typedef {{ id: string, title: string, observedAt: string, purpose?: string, opening?: string, heart?: string, dryDown?: string, overall?: string, descriptors?: string[], tags?: string[], experimentId?: string, attachmentRefs?: string[], provenance?: 'recorded'|'subjective'|'synthetic-demo' }} JournalEntry */
+/** @typedef {{ id: string, materialName: string, evaluationType: string, concentration: string, evaluationMethod: string, elapsedTime: string, originalText: string, correctedText: string, createdAt: string, updatedAt: string, source: 'typed'|'speech', aiSuggestions: unknown[] }} CompanionEntry */
+/** @typedef {{ version: number, journalEntries: JournalEntry[], experiments: Experiment[], revisions: FormulaRevision[], materials: Material[], batches: Batch[], evaluations: SensoryEvaluation[], stockMovements: StockMovement[], companionEntries: CompanionEntry[], calculations: unknown[], attachments: unknown[], tags: string[] }} AtelierState */
+/** @typedef {{ format: string, backupVersion: number, schemaVersion: number, application: string, exportedAt: string, state: AtelierState }} BackupEnvelope */
 /** @typedef {{ stockConcentration: number, targetConcentration: number, finalAmount: number, stockAmount: number, diluentAmount: number, unit: string }} DilutionCalculation */
-/** @typedef {{ id?: string, evaluator?: string, recordedAt: string, scores?: Object<string, number>, descriptors?: string[], notes?: string }} SensoryEvaluation */
 /** @typedef {{ id: string, name: string, mediaType: string, uri: string, createdAt?: string }} Attachment */
 /** @typedef {{ id?: string, name: string, color?: string }} Tag */
 
