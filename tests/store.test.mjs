@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addMaterial, addMaterialLot, addRevision, addStockMovement, batchSummary, createInitialState, deleteCompanionEntry, deleteLot, deleteMaterial, exportState, importLegacyCompanionEntries, inventorySummary, normalizeState, reconcileLot, reconcileLotOpening, reverseStockMovement, saveState, stockBalance, stockStatus, updateCompanionEntry, updateJournalEntry, validateState } from '../src/domain/store.mjs';
+import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addMaterial, addMaterialLot, addRevision, addStockMovement, batchSummary, compareBatchToPlan, createInitialState, deleteCompanionEntry, deleteLot, deleteMaterial, exportState, importLegacyCompanionEntries, inventorySummary, normalizeState, reconcileLot, reconcileLotOpening, reverseStockMovement, saveState, stockBalance, stockStatus, updateCompanionEntry, updateJournalEntry, validateState } from '../src/domain/store.mjs';
 
 test('normalizeState never fills incomplete state with demo seed records', () => {
   const normalized = normalizeState({ version: 2 });
@@ -413,6 +413,82 @@ test('batch retries with the same idempotency key do not duplicate consumption',
   const second = addBatch(first, experiment.id, input);
   assert.equal(second.batches.length, first.batches.length);
   assert.equal(second.stockMovements.length, first.stockMovements.length);
+});
+
+function batchFixture() {
+  const seed = createInitialState();
+  return { ...seed, experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [], stockMovements: seed.stockMovements.filter(item => item.movementType === 'opening') };
+}
+
+test('physical batch records mixing metadata and preserves the exact formula revision', () => {
+  let state = batchFixture();
+  state = addExperiment(state, { title: 'Physical trial', objective: 'Record what was mixed' });
+  const experiment = state.experiments[0];
+  state = addRevision(state, experiment.id, { notes: 'Plan before mixing', ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 20, unit: 'g', role: 'base' }] });
+  const revision = state.revisions[0];
+  const batch = addBatch(state, experiment.id, { batchCode: 'BATCH-PHYSICAL-1', formulaRevisionId: revision.id, plannedAmount: 20, unit: 'g', mixingDate: '2026-10-24T10:00:00.000Z', procedureNotes: 'Mixed slowly.', observations: 'Clear at completion.', deviations: 'None recorded.', actualAdditions: [{ materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 20, unit: 'g', concentration: 100, addedAt: '2026-10-24T10:05:00.000Z' }] });
+  assert.equal(batch.batches[0].formulaRevisionId, revision.id);
+  assert.equal(batch.batches[0].mixingDate, '2026-10-24T10:00:00.000Z');
+  assert.equal(batch.batches[0].observations, 'Clear at completion.');
+  assert.deepEqual(state.revisions.find(item => item.id === revision.id), batch.revisions.find(item => item.id === revision.id));
+});
+
+test('planned-versus-actual comparison reports missing, extra, and quantity deviations', () => {
+  let state = batchFixture();
+  state = addExperiment(state, { title: 'Variance trial', objective: 'Compare actual additions' });
+  const experiment = state.experiments[0];
+  state = addRevision(state, experiment.id, { ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 20, unit: 'g', role: 'base' }, { materialId: 'material-seed-2', lotId: 'lot-seed-2', quantity: 80, unit: 'g', role: 'diluent' }] });
+  const revision = state.revisions[0];
+  state = addMaterial(state, { id: 'material-extra', name: 'Unplanned modifier' });
+  state = addMaterialLot(state, 'material-extra', { id: 'lot-extra', lotCode: 'EXTRA-1', receivedAmount: 10, receivedUnit: 'g' });
+  state = addBatch(state, experiment.id, { formulaRevisionId: revision.id, plannedAmount: 100, unit: 'g', actualAdditions: [{ id: 'actual-cedar', materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 18, unit: 'g', concentration: 100 }, { id: 'actual-extra', materialId: 'material-extra', materialLotId: 'lot-extra', amount: 2, unit: 'g', concentration: 100 }] });
+  const comparison = compareBatchToPlan(state, state.batches[0].id);
+  assert.equal(comparison.plannedTotal, 100);
+  assert.equal(comparison.actualTotal, 20);
+  assert.equal(comparison.totalDifference, -80);
+  assert.equal(comparison.quantityDeviations.length, 1);
+  assert.equal(comparison.missingAdditions.length, 1);
+  assert.equal(comparison.missingAdditions[0].materialId, 'material-seed-2');
+  assert.equal(comparison.extraAdditions.length, 1);
+  assert.equal(comparison.extraAdditions[0].materialId, 'material-extra');
+});
+
+test('planned and actual quantities compare across compatible units', () => {
+  let state = batchFixture();
+  state = addExperiment(state, { title: 'Unit trial', objective: 'Compare mg and g' });
+  const experiment = state.experiments[0];
+  state = addRevision(state, experiment.id, { ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 1, unit: 'g' }] });
+  const revision = state.revisions[0];
+  state = addBatch(state, experiment.id, { formulaRevisionId: revision.id, plannedAmount: 1, unit: 'g', actualAdditions: [{ materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 1000, unit: 'mg', concentration: 100 }] });
+  const comparison = compareBatchToPlan(state, state.batches[0].id);
+  assert.equal(comparison.rows[0].status, 'matched');
+  assert.equal(comparison.totalDifference, 0);
+});
+
+test('batch creation rejects unrelated revisions and leaves input state unchanged on failure', () => {
+  let state = batchFixture();
+  state = addExperiment(state, { title: 'Safe trial', objective: 'No partial writes' });
+  const experiment = state.experiments[0];
+  state = addRevision(state, experiment.id, { ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 1, unit: 'g' }] });
+  const before = JSON.stringify(state);
+  assert.throws(() => addBatch(state, experiment.id, { formulaRevisionId: 'revision-from-another-experiment', plannedAmount: 1, unit: 'g', actualAdditions: [{ materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 1, unit: 'g' }] }), /revision belonging/);
+  assert.equal(JSON.stringify(state), before);
+  assert.throws(() => addBatch(state, experiment.id, { formulaRevisionId: state.revisions[0].id, plannedAmount: 1000, unit: 'g', actualAdditions: [{ materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 1000, unit: 'g' }] }), /Insufficient/);
+  assert.equal(JSON.stringify(state), before);
+});
+
+test('batch consumption rejects an unreconciled lot and keeps the formula revision intact', () => {
+  let state = batchFixture();
+  state = addExperiment(state, { title: 'Unknown stock trial', objective: 'Require reconciliation' });
+  const experiment = state.experiments[0];
+  state = addRevision(state, experiment.id, { ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 1, unit: 'g' }] });
+  const revision = state.revisions[0];
+  state = { ...state, materials: state.materials.map(material => ({ ...material, lots: material.lots.map(lot => lot.id === 'lot-seed-1' ? (({ receivedAmount, receivedUnit, ...rest }) => rest)(lot) : lot) })), stockMovements: [] };
+  const beforeRevision = JSON.stringify(state.revisions.find(item => item.id === revision.id));
+  assert.throws(() => addBatch(state, experiment.id, { formulaRevisionId: revision.id, plannedAmount: 1, unit: 'g', actualAdditions: [{ materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 1, unit: 'g' }] }), /no established opening balance/);
+  assert.equal(JSON.stringify(state.revisions.find(item => item.id === revision.id)), beforeRevision);
+  assert.equal(state.batches.length, 0);
+  assert.equal(state.stockMovements.length, 0);
 });
 
 test('inventory summary exposes unknown, low-stock, and date warnings', () => {
