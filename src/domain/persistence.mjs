@@ -1,5 +1,5 @@
 import { CURRENT_SCHEMA_VERSION, STORAGE_KEY, createInitialState, loadState, saveState } from './store.mjs';
-import { mergeBackup, replaceWithBackup } from './backup.mjs';
+import { mergeBackup, previewBackupMerge, replaceWithBackup } from './backup.mjs';
 
 // Writes are refused while the session is locked, because the app only holds a
 // fallback state in that case and saving it would destroy the unreadable saved
@@ -19,13 +19,20 @@ export function applyBackupImport(adapter, pendingBackup, { mode, currentState, 
   try {
     const result = mode === 'merge'
       ? mergeBackup(currentState, pendingBackup.state)
-      : { state: replaceWithBackup(pendingBackup.state), imported: pendingBackup.state.journalEntries.length, conflicts: [] };
+      : { state: replaceWithBackup(pendingBackup.state), imported: Object.values(pendingBackup.state).filter(value => Array.isArray(value)).reduce((sum, value) => sum + value.length, 0), conflicts: [] };
     const saved = persistState(adapter, result.state, { locked, allowLocked: mode === 'replace' });
     if (!saved.ok) return { ok: false, state: null, locked, error: saved.error };
     return { ok: true, state: saved.state, locked: false, imported: result.imported, conflicts: result.conflicts, error: '' };
   } catch (error) {
     return { ok: false, state: null, locked, error: error.message };
   }
+}
+
+export function previewBackupImport(currentState, pendingBackup, { mode = 'merge', locked = false } = {}) {
+  if (!pendingBackup) throw new Error('No backup is pending.');
+  if (mode === 'merge' && locked) throw new Error('Merge needs your current records, which could not be loaded. Use Replace to restore this backup instead.');
+  if (mode === 'replace') return { imported: Object.values(pendingBackup.state).filter(value => Array.isArray(value)).reduce((sum, value) => sum + value.length, 0), conflicts: [] };
+  return previewBackupMerge(currentState, pendingBackup.state);
 }
 
 // Bootstrapping a session after a failed load must never hand the app a

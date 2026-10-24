@@ -23,8 +23,8 @@ The core workflow is functional in the browser:
 - Journal records for opening, heart, dry-down, overall impression, purpose, hypothesis, descriptors, intensity, longevity, projection, evaluation time, medium, environment, personal notes, conclusions, and next steps.
 - Experiment workflow statuses: Draft, Mixed, Maturing, Evaluated, and Archived. These are workflow labels, not scientific validation claims.
 - Immutable formula revision history with `supersedesRevisionId` links.
-- Material and lot ledger with optional supplier, product/reference, acquisition date, purity, stock concentration, solvent, storage notes, and safety-reference fields.
-- Append-only stock movements: opening, receipt, adjustment, consumption, wastage, correction, and reversal. Balances are replayed from movements; they are not independently editable.
+- Material and lot ledger with optional supplier, product/reference, acquisition date, purity, stock concentration, density, storage notes, safety-reference, expiry, retest, and low-stock threshold fields. Multiple physical lots for one material remain separate.
+- Append-only stock movements: opening, receipt, confirmed return, verified adjustment, consumption, wastage/disposal, correction, and reversal. Balances are replayed from movements; they are not independently editable.
 - Batch traceability: every batch references an experiment and exact formula revision, while actual additions retain material, exact lot, and exactly one linked consumption movement.
 - Sensory timeline records for multiple intervals after mixing and a comparison view that keeps subjective impressions separate from measured-result text.
 - Keyboard-friendly dialogs, readable tables, responsive mobile layouts, empty states, sample-data warnings, and local JSON export.
@@ -58,7 +58,7 @@ The normalized state contains journal entries, experiments, formula revisions, f
 
 ## Stock ledger and history integrity
 
-Each lot belongs to one material and has a stock unit. A movement quantity is always positive; movement type and direction determine whether it increases or decreases the replayed balance. Mass and volume remain separate unless a valid density is supplied. Consumption is rejected when it would make the lot balance negative.
+Each lot belongs to one material and has a stock unit when known. A movement quantity is always positive; movement type and direction determine whether it increases or decreases the replayed balance. Mass and volume remain separate unless a valid positive density in g/mL is supplied. Consumption is rejected when it would make the lot balance negative. Replayed balances are rounded to a documented `1e-9` base-unit precision after each movement to prevent accumulated floating-point drift; the original quantity, unit, density, and timestamp remain on every movement for auditability.
 
 A lot's opening balance is either **established** or **unreconciled**. It is established when the lot records a received amount or carries an explicit `opening` movement. Otherwise the lot is unreconciled: its replayed balance is a floor derived from recorded consumption, not a measured stock figure, and `stockStatus` reports `balanceKnown: false` so callers never present it as an on-hand quantity. Further consumption on an unreconciled lot is refused, because without an opening there is no way to distinguish a valid draw from an overdraft. Receipts, corrections and reversals stay permitted. `reconcileLotOpening` records a user-supplied opening for such a lot and is the only sanctioned path out of the unreconciled state; the amount always comes from the user's measurement and is never derived from consumption history. A lot with an established opening is reported as reconciled with a real balance.
 
@@ -68,9 +68,15 @@ Existing version-1 local state is migrated by replaying the consumption that its
 
 Formula revisions are append-only. A new revision must belong to the target experiment and supersede that experiment's current latest revision. Batches retain the exact revision used. Evaluations validate experiment, batch, and revision relationships and derive a missing revision from the selected batch when possible. Journal-to-experiment reverse links are maintained by the domain operation rather than only by the UI.
 
+### Inventory operations
+
+Open **Inventory & materials** from the sidebar to add a material, add separate lots, append receipts/returns/verified adjustments/disposals/corrections, and inspect chronological lot history. Adjustment, correction, and disposal records require a reason; adjustments also require explicit verification. A return requires an explicit confirmation checkbox. Historical movements are never edited. Use **Reconcile** on a lot to compare recorded on-hand with a physical count; the variance is shown before a compensating adjustment is appended. Lots without a trustworthy opening remain visibly unknown and can be given a measured opening through the same workflow.
+
+The inventory dashboard reports known lots, lots requiring reconciliation, low-stock thresholds, expiry/retest reminders, recent movements, missing lot codes, and linked batch usage. These are operational reminders only and do not prove chemical safety, identity, purity, or usability.
+
 ## Versioned backup and persistence adapter
 
-Backups use the envelope `{format: "atelier-scent-lab-backup", backupVersion: 1, schemaVersion: 2, application, exportedAt, state}`. Import validates JSON, format/version, record IDs, units, and relationships before applying anything. Merge adds only missing IDs and reports conflicting IDs without overwriting current records. Replace explicitly replaces the local state after validation. Re-importing the same file is idempotent. The current version-1 local state and legacy `atelier.scent-companion.v1` data are migrated without deleting the source until the new state has been saved successfully.
+Backups use the envelope `{format: "atelier-scent-lab-backup", backupVersion: 1, schemaVersion: 2, application, exportedAt, state}`. Import validates JSON, format/version, record IDs, units, quantities, duplicate movements, and relationships before applying anything. The import dialog previews new records and conflicting IDs before a merge. Merge adds only missing IDs and reports conflicting IDs without overwriting current records. Replace explicitly replaces the local state after validation. Re-importing the same file is idempotent, and a failed persistence write is shown as an error rather than reported as success. The current version-1 local state and legacy `atelier.scent-companion.v1` data are migrated without deleting the source until the new state has been saved successfully.
 
 `src/domain/persistence.mjs` defines the small adapter seam used by the app: `load()`, `save(state)`, `subscribe(listener)`, and `schemaVersion`. The included adapter is synchronous browser `localStorage`; tests use an in-memory adapter. Storage, serialization, malformed-state, quota, and migration failures are surfaced instead of being reported as successful saves or silently reset.
 

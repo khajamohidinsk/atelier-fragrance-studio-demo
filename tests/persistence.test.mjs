@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyBackupImport, bootstrapState, createMemoryAdapter, createLocalStorageAdapter, persistState } from '../src/domain/persistence.mjs';
+import { applyBackupImport, bootstrapState, createMemoryAdapter, createLocalStorageAdapter, persistState, previewBackupImport } from '../src/domain/persistence.mjs';
 import { addStockMovement, createInitialState, loadState, saveState, stockStatus } from '../src/domain/store.mjs';
 import { serializeBackup } from '../src/domain/backup.mjs';
 
@@ -66,6 +66,14 @@ test('an invalid backup is rejected and leaves the saved bytes untouched', () =>
   const result = applyBackupImport(adapter, { state: { materials: [null] } }, { mode: 'replace', currentState: boot.state, locked: boot.locked });
   assert.equal(result.ok, false);
   assert.equal(storage.writes.length, 0, 'an invalid backup must not be written');
+});
+
+test('backup preview is available before a merge is persisted', () => {
+  const current = createInitialState();
+  const incoming = JSON.parse(serializeBackup({ ...current, journalEntries: [...current.journalEntries, { id: 'preview-1', title: 'New', observedAt: '2026-10-24T00:00:00.000Z' }] }));
+  const preview = previewBackupImport(current, incoming, { mode: 'merge' });
+  assert.equal(preview.imported, 1);
+  assert.equal(current.journalEntries.some(item => item.id === 'preview-1'), false);
 });
 
 test('batch consumption is blocked on an unreconciled lot through the app persistence path', () => {
@@ -193,4 +201,25 @@ test('legacy migration records opening only from an explicitly recorded received
     const opening = openings.find(item => item.materialLotId === lotId);
     if (opening) assert.notEqual(opening.quantity, consumed);
   }
+});
+
+test('legacy migration preserves an explicit remaining quantity without inventing density', () => {
+  const base = createInitialState();
+  const legacy = { ...base, version: 1, stockMovements: undefined };
+  legacy.batches = legacy.batches.map(batch => ({ ...batch, actualAdditions: batch.actualAdditions.map(({ stockMovementId, ...addition }) => addition) }));
+  legacy.materials = legacy.materials.map(material => ({ ...material, lots: material.lots.map(({ receivedAmount, ...lot }) => ({ ...lot, remainingAmount: lot.id === 'lot-seed-1' ? 70 : 20, remainingUnit: 'g', receivedUnit: 'g' })) }));
+  const state = loadState({ getItem: () => JSON.stringify(legacy) });
+  const opening = state.stockMovements.find(item => item.materialLotId === 'lot-seed-1' && item.movementType === 'opening');
+  assert.equal(opening.quantity, 90, '70 g remaining plus 20 g documented consumption establishes a 90 g opening');
+  assert.equal(state.materials[0].lots[0].reconciliation, 'established');
+});
+
+test('legacy migration is deterministic for interrupted retries', () => {
+  const base = createInitialState();
+  const legacy = { ...base, version: 1, stockMovements: undefined };
+  legacy.batches = legacy.batches.map(batch => ({ ...batch, actualAdditions: batch.actualAdditions.map(({ stockMovementId, ...addition }) => addition) }));
+  const first = loadState({ getItem: () => JSON.stringify(legacy) });
+  const second = loadState({ getItem: () => JSON.stringify(legacy) });
+  assert.deepEqual(second.stockMovements.map(item => item.id), first.stockMovements.map(item => item.id));
+  assert.deepEqual(second.batches[0].actualAdditions.map(item => item.stockMovementId), first.batches[0].actualAdditions.map(item => item.stockMovementId));
 });

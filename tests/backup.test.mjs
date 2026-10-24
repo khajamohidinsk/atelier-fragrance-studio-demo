@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BACKUP_FORMAT, createBackup, mergeBackup, parseBackup, serializeBackup } from '../src/domain/backup.mjs';
+import { BACKUP_FORMAT, createBackup, mergeBackup, parseBackup, previewBackupMerge, serializeBackup } from '../src/domain/backup.mjs';
 import { createInitialState } from '../src/domain/store.mjs';
 
 test('backup export and import round-trip preserves collections and IDs', () => {
@@ -66,4 +66,13 @@ test('empty state can be exported and imported', () => {
   const parsed = parseBackup(JSON.stringify(createBackup(empty, { exportedAt: '2026-10-22T00:00:00.000Z' })));
   assert.deepEqual(parsed.state.journalEntries, []);
   assert.deepEqual(parsed.state.stockMovements, []);
+});
+
+test('backup merge preview reports new records and conflicts before applying', () => {
+  const current = createInitialState();
+  const incoming = createInitialState();
+  incoming.journalEntries = [{ ...incoming.journalEntries[0], title: 'Changed locally elsewhere' }, { id: 'preview-new', title: 'New', observedAt: '2026-10-24T00:00:00.000Z' }];
+  const preview = previewBackupMerge(current, incoming);
+  assert.equal(preview.imported, 1);
+  assert.equal(preview.conflicts.length, 1);
 });

@@ -4,11 +4,13 @@ export const STORAGE_KEY = 'atelier-lab-state-v1';
 export const LEGACY_COMPANION_STORAGE_KEY = 'atelier.scent-companion.v1';
 export const CURRENT_SCHEMA_VERSION = 2;
 export const statuses = ['Draft', 'Mixed', 'Maturing', 'Evaluated', 'Archived'];
-export const movementTypes = ['opening', 'receipt', 'adjustment', 'consumption', 'wastage', 'correction', 'reversal'];
+export const movementTypes = ['opening', 'receipt', 'return', 'adjustment', 'consumption', 'wastage', 'correction', 'reversal'];
+export const STOCK_PRECISION = 1e-9;
 
 const now = () => new Date().toISOString();
 const id = prefix => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const clone = value => JSON.parse(JSON.stringify(value));
+const roundStock = value => Math.round(value / STOCK_PRECISION) * STOCK_PRECISION;
 
 function requireText(value, label) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} is required.`);
@@ -17,6 +19,11 @@ function requireText(value, label) {
 
 function positiveFinite(value, label) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) throw new Error(`${label} must be greater than zero.`);
+  return value;
+}
+
+function nonNegativeFinite(value, label) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`${label} must be zero or greater.`);
   return value;
 }
 
@@ -50,11 +57,11 @@ function findLot(state, lotId) {
 }
 
 function lotUnit(lot) {
-  return lot.receivedUnit || lot.defaultUnit || 'g';
+  return lot.receivedUnit || lot.defaultUnit || lot.remainingUnit;
 }
 
 function movementDirection(movement) {
-  if (movement.movementType === 'opening' || movement.movementType === 'receipt') return 1;
+  if (movement.movementType === 'opening' || movement.movementType === 'receipt' || movement.movementType === 'return') return 1;
   if (movement.movementType === 'consumption' || movement.movementType === 'wastage') return -1;
   if (movement.movementType === 'adjustment' || movement.movementType === 'correction') return movement.direction === 'decrease' ? -1 : 1;
   if (movement.movementType === 'reversal') return movement.direction === 'decrease' ? -1 : 1;
@@ -90,7 +97,7 @@ function normalizeMovement(state, input, { allowGeneratedId = false, enforceOpen
   if (owningMaterial.id !== material.id || lot.materialId && lot.materialId !== material.id) throw new Error('Stock movement material and lot do not match.');
   const unit = requireText(input.unit || lotUnit(lot), 'Movement unit');
   validateUnit(unit);
-  const baseUnit = lotUnit(lot);
+  const baseUnit = lotUnit(lot) || unit;
   validateUnit(baseUnit);
   const density = input.density ?? lot.density;
   const quantity = positiveFinite(input.quantity, 'Movement quantity');
@@ -105,7 +112,17 @@ function normalizeMovement(state, input, { allowGeneratedId = false, enforceOpen
     input = { ...input, direction: movementDirection(reference) > 0 ? 'decrease' : 'increase' };
   }
   if ((movementType === 'correction' || movementType === 'reversal') && !input.referenceMovementId) throw new Error(`${movementType} movements require referenceMovementId.`);
+  if (movementType === 'correction') {
+    const reference = state.stockMovements.find(item => item.id === input.referenceMovementId);
+    if (!reference) throw new Error('A correction must reference an existing stock movement.');
+    if (reference.materialLotId !== materialLotId) throw new Error('A correction must reference a movement from the same lot.');
+    if (reference.id === input.id) throw new Error('A correction cannot reference itself.');
+  }
   if ((movementType === 'adjustment' || movementType === 'correction') && !['increase', 'decrease'].includes(input.direction)) throw new Error(`${movementType} movements require direction increase or decrease.`);
+  if (['adjustment', 'correction', 'wastage'].includes(movementType) && !String(input.note || '').trim()) throw new Error(`${movementType} movements require a reason.`);
+  if (movementType === 'adjustment' && input.verified !== true) throw new Error('Adjustments require explicit verification.');
+  if (movementType === 'return' && input.confirmedReturn !== true) throw new Error('Returns require explicit confirmation of the quantity returned.');
+  if (movementType === 'reversal' && state.stockMovements.some(item => item.movementType === 'reversal' && item.referenceMovementId === input.referenceMovementId && item.id !== input.id)) throw new Error('A stock movement can only be reversed once.');
   const createdAt = input.occurredAt || now();
   if (Number.isNaN(Date.parse(createdAt))) throw new Error('Movement timestamp is invalid.');
   return {
@@ -117,11 +134,14 @@ function normalizeMovement(state, input, { allowGeneratedId = false, enforceOpen
     unit,
     density,
     direction: input.direction,
+    verified: input.verified === true,
+    confirmedReturn: input.confirmedReturn === true,
     occurredAt: createdAt,
     note: input.note || '',
     batchId: input.batchId,
     additionId: input.additionId,
-    referenceMovementId: input.referenceMovementId
+    referenceMovementId: input.referenceMovementId,
+    provenance: input.provenance || 'recorded'
   };
 }
 
@@ -177,8 +197,15 @@ export function normalizeState(input) {
     state.stockMovements = [];
     for (const [lotId, rows] of additionsByLot) {
       const { lot } = findLot(state, lotId);
-      if (lot.receivedAmount != null) {
-        state.stockMovements.push({ id: `movement-legacy-opening-${lotId}`, materialId: lot.materialId, materialLotId: lotId, movementType: 'opening', quantity: lot.receivedAmount, unit: lot.receivedUnit || lotUnit(lot), density: lot.density, occurredAt: lot.receivedAt || rows[0].batch.createdAt || now(), note: 'Migrated opening balance from recorded lot received amount.', provenance: 'migration' });
+      const unit = lot.receivedUnit || lot.defaultUnit || lot.remainingUnit || rows[0]?.addition.unit;
+      let consumptionTotal;
+      try { consumptionTotal = unit ? rows.reduce((sum, row) => sum + convertQuantity(row.addition.amount, row.addition.unit, unit, { density: row.addition.density ?? lot.density }), 0) : undefined; } catch { consumptionTotal = undefined; }
+      const hasReceived = lot.receivedAmount != null && (lot.receivedUnit || lot.defaultUnit);
+      const hasRemaining = lot.remainingAmount != null && Number.isFinite(lot.remainingAmount) && lot.remainingAmount >= 0 && unit && consumptionTotal !== undefined;
+      if (hasReceived || hasRemaining) {
+        const openingQuantity = hasReceived ? lot.receivedAmount : lot.remainingAmount + consumptionTotal;
+        const note = hasReceived ? 'Migrated opening balance from recorded lot received amount.' : 'Migrated opening balance from recorded remaining quantity plus documented historical consumption.';
+        state.stockMovements.push({ id: `movement-legacy-opening-${lotId}`, materialId: lot.materialId, materialLotId: lotId, movementType: 'opening', quantity: openingQuantity, unit, density: lot.density, occurredAt: lot.receivedAt || rows[0].batch.createdAt || now(), note, provenance: 'migration' });
         lot.reconciliation = 'established';
       } else {
         // No trustworthy opening exists for this lot. Preserve the historical
@@ -199,7 +226,26 @@ export function validateState(state) {
   allIds(normalized.journalEntries, 'journal entry'); allIds(normalized.experiments, 'experiment'); allIds(normalized.revisions, 'revision'); allIds(normalized.batches, 'batch'); allIds(normalized.evaluations, 'evaluation'); allIds(normalized.stockMovements, 'stock movement');
   const materialIds = allIds(normalized.materials, 'material');
   const lotIds = new Set();
-  for (const material of normalized.materials) { for (const lot of material.lots || []) { if (!lot.id || lotIds.has(lot.id)) throw new Error('Duplicate or missing material lot id.'); lotIds.add(lot.id); if (lot.materialId !== material.id) throw new Error(`Lot ${lot.id} does not belong to its material.`); validateUnit(lotUnit(lot)); if (lot.receivedAmount !== undefined) positiveFinite(lot.receivedAmount, `Lot ${lot.id} received amount`); } }
+  for (const material of normalized.materials) {
+    if (!material.name || typeof material.name !== 'string') throw new Error('Every material needs a name.');
+    const lotCodes = new Set();
+    for (const lot of material.lots || []) {
+      if (!lot.id || lotIds.has(lot.id)) throw new Error('Duplicate or missing material lot id.');
+      lotIds.add(lot.id);
+      if (lot.materialId !== material.id) throw new Error(`Lot ${lot.id} does not belong to its material.`);
+      if (lot.lotCode && (lotCodes.has(lot.lotCode.trim()) || !lot.lotCode.trim())) throw new Error(`Duplicate or ambiguous lot code for material ${material.id}.`);
+      if (lot.lotCode) lotCodes.add(lot.lotCode.trim());
+      if (lot.receivedUnit) validateUnit(lot.receivedUnit);
+      if (lot.defaultUnit) validateUnit(lot.defaultUnit);
+      if (lot.receivedAmount !== undefined) positiveFinite(lot.receivedAmount, `Lot ${lot.id} received amount`);
+      if (lot.purity !== undefined) finitePercentage(lot.purity, `Lot ${lot.id} purity`);
+      if (lot.stockConcentration !== undefined) finitePercentage(lot.stockConcentration, `Lot ${lot.id} concentration`);
+      if (lot.density !== undefined) positiveFinite(lot.density, `Lot ${lot.id} density`);
+      if (lot.lowStockThreshold !== undefined) nonNegativeFinite(lot.lowStockThreshold, `Lot ${lot.id} low-stock threshold`);
+      if (lot.expiryDate && Number.isNaN(Date.parse(lot.expiryDate))) throw new Error(`Lot ${lot.id} expiry date is invalid.`);
+      if (lot.retestDate && Number.isNaN(Date.parse(lot.retestDate))) throw new Error(`Lot ${lot.id} retest date is invalid.`);
+    }
+  }
   const experimentIds = new Set(normalized.experiments.map(item => item.id)); const revisionIds = new Set(normalized.revisions.map(item => item.id)); const batchIds = new Set(normalized.batches.map(item => item.id));
   for (const experiment of normalized.experiments) { if (!statuses.includes(experiment.status)) throw new Error(`Invalid experiment status for ${experiment.id}.`); for (const revisionId of experiment.formulaRevisionIds || []) { const revision = normalized.revisions.find(item => item.id === revisionId); if (!revision || revision.experimentId !== experiment.id) throw new Error(`Experiment ${experiment.id} has an invalid revision link.`); } for (const batchId of experiment.batchIds || []) { const batch = normalized.batches.find(item => item.id === batchId); if (!batch || batch.experimentId !== experiment.id) throw new Error(`Experiment ${experiment.id} has an invalid batch link.`); } for (const evaluationId of experiment.evaluationIds || []) { const evaluation = normalized.evaluations.find(item => item.id === evaluationId); if (!evaluation || evaluation.experimentId !== experiment.id) throw new Error(`Experiment ${experiment.id} has an invalid evaluation link.`); } }
   for (const revision of normalized.revisions) { if (!experimentIds.has(revision.experimentId)) throw new Error(`Revision ${revision.id} references an unknown experiment.`); if (revision.supersedesRevisionId && (!revisionIds.has(revision.supersedesRevisionId) || normalized.revisions.find(item => item.id === revision.supersedesRevisionId).experimentId !== revision.experimentId)) throw new Error(`Revision ${revision.id} has an invalid predecessor.`); for (const ingredient of revision.ingredients || []) { if (!materialIds.has(ingredient.materialId)) throw new Error(`Revision ${revision.id} references an unknown material.`); if (ingredient.lotId && !lotIds.has(ingredient.lotId)) throw new Error(`Revision ${revision.id} references an unknown lot.`); } }
@@ -243,24 +289,71 @@ function validateAddition(state, addition) {
   if (!addition?.id) throw new Error('Every batch addition needs an id.');
   const material = findMaterial(state, addition.materialId); const { material: owningMaterial, lot } = findLot(state, addition.materialLotId);
   if (material.id !== owningMaterial.id || lot.materialId !== material.id) throw new Error(`Batch addition ${addition.id} material and lot do not match.`);
-  positiveFinite(addition.amount, `Batch addition ${addition.id} amount`); validateUnit(addition.unit); finitePercentage(addition.concentration ?? 100, `Batch addition ${addition.id} concentration`); convertQuantity(addition.amount, addition.unit, lotUnit(lot), { density: addition.density ?? lot.density });
+  positiveFinite(addition.amount, `Batch addition ${addition.id} amount`); validateUnit(addition.unit); finitePercentage(addition.concentration ?? 100, `Batch addition ${addition.id} concentration`); convertQuantity(addition.amount, addition.unit, lotUnit(lot) || addition.unit, { density: addition.density ?? lot.density });
 }
 
 export function stockBalance(state, materialLotId, unit) {
-  const normalized = normalizeState(state); const { lot } = findLot(normalized, materialLotId); const targetUnit = unit || lotUnit(lot); validateUnit(targetUnit); let balance = 0;
-  for (const movement of normalized.stockMovements.filter(item => item.materialLotId === materialLotId)) { const amount = convertQuantity(movement.quantity, movement.unit, targetUnit, { density: movement.density ?? lot.density }); let direction = movementDirection(movement); if (movement.movementType === 'reversal') { const original = normalized.stockMovements.find(item => item.id === movement.referenceMovementId); direction = -movementDirection(original); } balance += direction * amount; }
-  return balance;
+  const normalized = normalizeState(state); const { lot } = findLot(normalized, materialLotId); const targetUnit = unit || lotUnit(lot) || normalized.stockMovements.find(item => item.materialLotId === materialLotId)?.unit; if (!targetUnit) throw new Error(`Lot "${materialLotId}" has no known stock unit.`); validateUnit(targetUnit); let balance = 0;
+  for (const movement of normalized.stockMovements.filter(item => item.materialLotId === materialLotId).sort((a, b) => String(a.occurredAt).localeCompare(String(b.occurredAt)) || String(a.id).localeCompare(String(b.id)))) { const amount = convertQuantity(movement.quantity, movement.unit, targetUnit, { density: movement.density ?? lot.density }); let direction = movementDirection(movement); if (movement.movementType === 'reversal') { const original = normalized.stockMovements.find(item => item.id === movement.referenceMovementId); direction = -movementDirection(original); } balance = roundStock(balance + direction * amount); }
+  return roundStock(balance);
 }
 
-export function stockBalances(state, materialLotId) { const { lot } = findLot(normalizeState(state), materialLotId); return { unit: lotUnit(lot), balance: stockBalance(state, materialLotId, lotUnit(lot)) }; }
+export function stockBalances(state, materialLotId) { const normalized = normalizeState(state); const { lot } = findLot(normalized, materialLotId); const unit = lotUnit(lot) || normalized.stockMovements.find(item => item.materialLotId === materialLotId)?.unit; if (!unit) return { unit: null, balance: null }; return { unit, balance: stockBalance(normalized, materialLotId, unit) }; }
 
 // A lot's opening is either established (a received amount or an explicit
 // opening movement) or unreconciled. In the unreconciled case the replayed
 // balance is only a floor — the sum of known consumption — and must never be
 // presented as a measured stock figure.
 export function stockStatus(state, materialLotId) {
-  const normalized = normalizeState(state); const { lot } = findLot(normalized, materialLotId); const unit = lotUnit(lot); const established = hasOpeningEstablished(normalized, materialLotId); const balance = stockBalance(state, materialLotId, unit);
-  return { materialLotId, unit, established, balance, reconciled: established, balanceKnown: established, note: established ? 'Opening balance established.' : 'Opening balance unknown; balance is a floor of recorded consumption only.' };
+  const normalized = normalizeState(state); const { lot } = findLot(normalized, materialLotId); const unit = lotUnit(lot) || normalized.stockMovements.find(item => item.materialLotId === materialLotId)?.unit || null; const established = hasOpeningEstablished(normalized, materialLotId); const balance = unit ? stockBalance(normalized, materialLotId, unit) : null;
+  return { materialLotId, unit, established, balance, reconciled: established, balanceKnown: established && unit !== null, note: established ? 'Opening balance established.' : 'Opening balance unknown; balance is a floor of recorded consumption only.' };
+}
+
+export function lotMovementHistory(state, materialLotId) {
+  const normalized = normalizeState(state); findLot(normalized, materialLotId);
+  return normalized.stockMovements.filter(item => item.materialLotId === materialLotId).sort((a, b) => String(a.occurredAt).localeCompare(String(b.occurredAt)) || String(a.id).localeCompare(String(b.id))).map(item => ({ ...item }));
+}
+
+export function inventorySummary(state, { today = new Date().toISOString().slice(0, 10) } = {}) {
+  const normalized = normalizeState(state);
+  const lots = normalized.materials.flatMap(material => (material.lots || []).map(lot => {
+    const status = stockStatus(normalized, lot.id);
+    const warnings = [];
+    if (!status.balanceKnown) warnings.push('Opening quantity unknown; reconcile physical stock.');
+    if (!lot.lotCode) warnings.push('Lot code not recorded.');
+    if (lot.expiryDate && lot.expiryDate < today) warnings.push('Expiry date has passed.');
+    if (lot.retestDate && lot.retestDate < today) warnings.push('Retest date has passed.');
+    if (status.balanceKnown && lot.lowStockThreshold !== undefined && status.balance <= lot.lowStockThreshold) warnings.push('Below low-stock threshold.');
+    return { materialId: material.id, materialName: material.name, lot: { ...lot }, ...status, warnings };
+  }));
+  return { lots, unknownLots: lots.filter(item => !item.balanceKnown), lowStock: lots.filter(item => item.warnings.includes('Below low-stock threshold.')), dateWarnings: lots.filter(item => item.warnings.some(warning => warning.includes('date'))), recentMovements: normalized.stockMovements.slice().sort((a, b) => String(b.occurredAt).localeCompare(String(a.occurredAt))).slice(0, 12) };
+}
+
+export function reconcileLot(state, materialLotId, { physicalQuantity, unit, reason, occurredAt, density } = {}) {
+  const normalized = normalizeState(state); const { lot } = findLot(normalized, materialLotId); const status = stockStatus(normalized, materialLotId);
+  nonNegativeFinite(physicalQuantity, 'Physical count');
+  const targetUnit = unit || lotUnit(lot); validateUnit(targetUnit);
+  const recorded = status.balanceKnown ? stockBalance(normalized, materialLotId, targetUnit) : undefined;
+  if (recorded === undefined) throw new Error('Reconcile the opening balance before comparing a physical count.');
+  const variance = roundStock(physicalQuantity - recorded);
+  if (Math.abs(variance) <= STOCK_PRECISION) throw new Error('Physical count matches recorded on-hand; no adjustment is required.');
+  if (!String(reason || '').trim()) throw new Error('A reconciliation reason is required.');
+  return { variance, state: addStockMovement(normalized, { materialId: lot.materialId, materialLotId, movementType: 'adjustment', direction: variance > 0 ? 'increase' : 'decrease', quantity: Math.abs(variance), unit: targetUnit, density, verified: true, occurredAt, note: reason }) };
+}
+
+export function addMaterial(state, input) {
+  const normalized = normalizeState(state); const material = { id: input.id || id('material'), name: requireText(input.name, 'Material name'), canonicalIdentity: input.canonicalIdentity || '', supplier: input.supplier || '', productReference: input.productReference || '', safetyReference: input.safetyReference || '', storageNotes: input.storageNotes || '', lots: [] };
+  if (normalized.materials.some(item => item.id === material.id || (item.canonicalIdentity && material.canonicalIdentity && item.canonicalIdentity === material.canonicalIdentity && item.name === material.name))) throw new Error('A material with this identity already exists.');
+  return validateState({ ...normalized, materials: [material, ...normalized.materials] });
+}
+
+export function addMaterialLot(state, materialId, input) {
+  const normalized = normalizeState(state); const material = findMaterial(normalized, materialId); const lot = { id: input.id || id('lot'), materialId, lotCode: input.lotCode || '', receivedAt: input.receivedAt || input.acquiredAt, receivedAmount: input.receivedAmount, receivedUnit: input.receivedUnit, supplier: input.supplier || '', productReference: input.productReference || '', concentration: input.concentration, stockConcentration: input.stockConcentration, purity: input.purity, density: input.density, expiryDate: input.expiryDate, retestDate: input.retestDate, lowStockThreshold: input.lowStockThreshold, notes: input.notes || '', reconciliation: input.receivedAmount === undefined ? 'unreconciled' : 'established' };
+  if (lot.receivedAmount !== undefined && !lot.receivedUnit) throw new Error('A received quantity requires its unit.');
+  if (material.lots.some(item => lot.lotCode && item.lotCode === lot.lotCode)) throw new Error(`Lot code "${lot.lotCode}" is already used for this material.`);
+  const next = validateState({ ...normalized, materials: normalized.materials.map(item => item.id === materialId ? { ...item, lots: [lot, ...item.lots] } : item) });
+  if (lot.receivedAmount === undefined) return next;
+  return addStockMovement(next, { id: `movement-${lot.id}`, materialId, materialLotId: lot.id, movementType: 'opening', quantity: lot.receivedAmount, unit: lot.receivedUnit, density: lot.density, occurredAt: lot.receivedAt || now(), note: 'Opening balance recorded with lot.', provenance: 'recorded' });
 }
 
 // Record the opening balance for a lot whose stock is still unreconciled. This
@@ -276,7 +369,8 @@ export function addStockMovement(state, input) {
   const normalized = normalizeState(state); const movement = normalizeMovement(normalized, { ...input, id: input.id || id('movement') }, { allowGeneratedId: true });
   if (normalized.stockMovements.some(item => item.id === movement.id)) throw new Error(`Stock movement ${movement.id} already exists.`);
   const next = { ...normalized, stockMovements: [...normalized.stockMovements, movement] };
-  if (stockBalance(next, movement.materialLotId, lotUnit(findLot(next, movement.materialLotId).lot)) < -1e-9) throw new Error('Insufficient stock for this movement.');
+  const balanceUnit = lotUnit(findLot(next, movement.materialLotId).lot) || movement.unit;
+  if (stockBalance(next, movement.materialLotId, balanceUnit) < -1e-9) throw new Error('Insufficient stock for this movement.');
   return validateState(next);
 }
 
@@ -324,14 +418,15 @@ export function addRevision(state, experimentId, input) {
 
 export function addBatch(state, experimentId, input) {
   const normalized = normalizeState(state); const experiment = normalized.experiments.find(item => item.id === experimentId); if (!experiment) throw new Error('Experiment not found.'); if (input.experimentId && input.experimentId !== experimentId) throw new Error('Batch experimentId cannot override the target experiment.');
+  if (input.idempotencyKey) { const existing = normalized.batches.find(item => item.idempotencyKey === input.idempotencyKey); if (existing) return normalized; }
   const revision = normalized.revisions.find(item => item.id === input.formulaRevisionId); if (!revision || revision.experimentId !== experimentId || !experiment.formulaRevisionIds.includes(revision.id)) throw new Error('Batch must reference a revision belonging to its experiment.');
   const actualAdditions = (input.actualAdditions || []).map(item => ({ ...item, id: item.id || id('addition'), addedAt: item.addedAt || now() })); if (!actualAdditions.length) throw new Error('At least one actual addition is required.');
-  const batchId = id('batch');
+  const batchId = input.id || id('batch');
   const additionIds = new Set(normalized.batches.flatMap(batch => batch.actualAdditions || []).map(item => item.id)); const movementIds = new Set(normalized.stockMovements.map(item => item.id)); const movements = [];
   for (const addition of actualAdditions) { if (additionIds.has(addition.id)) throw new Error(`Batch addition ${addition.id} already exists.`); validateAddition(normalized, addition); const movementId = `movement-${addition.id}`; if (movementIds.has(movementId)) throw new Error(`Stock consumption for addition ${addition.id} already exists.`); const movement = normalizeMovement(normalized, { id: movementId, materialId: addition.materialId, materialLotId: addition.materialLotId, movementType: 'consumption', quantity: addition.amount, unit: addition.unit, density: addition.density, occurredAt: addition.addedAt, batchId, additionId: addition.id, note: `Consumption for batch ${input.batchCode || 'new batch'}` }, { allowGeneratedId: true }); movements.push(movement); addition.stockMovementId = movement.id; }
-  const batch = { id: batchId, batchCode: input.batchCode || `BATCH-${String(normalized.batches.length + 1).padStart(3, '0')}`, experimentId, formulaRevisionId: revision.id, plannedAmount: positiveFinite(input.plannedAmount, 'Planned amount'), unit: requireText(input.unit, 'Batch unit'), actualAdditions, procedureNotes: input.procedureNotes || '', maturationSchedule: input.maturationSchedule || '', result: input.result || '', createdAt: now() };
+  const batch = { id: batchId, idempotencyKey: input.idempotencyKey, batchCode: input.batchCode || `BATCH-${String(normalized.batches.length + 1).padStart(3, '0')}`, experimentId, formulaRevisionId: revision.id, plannedAmount: positiveFinite(input.plannedAmount, 'Planned amount'), unit: requireText(input.unit, 'Batch unit'), actualAdditions, procedureNotes: input.procedureNotes || '', maturationSchedule: input.maturationSchedule || '', result: input.result || '', createdAt: now() };
   validateUnit(batch.unit); const next = { ...normalized, batches: [batch, ...normalized.batches], stockMovements: [...normalized.stockMovements, ...movements], experiments: normalized.experiments.map(item => item.id === experimentId ? { ...item, batchIds: [...item.batchIds, batch.id], status: item.status === 'Draft' ? 'Mixed' : item.status } : item) };
-  for (const movement of movements) if (stockBalance(next, movement.materialLotId, lotUnit(findLot(next, movement.materialLotId).lot)) < -1e-9) throw new Error('Insufficient stock for one or more batch additions.');
+  for (const movement of movements) if (stockBalance(next, movement.materialLotId, lotUnit(findLot(next, movement.materialLotId).lot) || movement.unit) < -1e-9) throw new Error('Insufficient stock for one or more batch additions.');
   return validateState(next);
 }
 

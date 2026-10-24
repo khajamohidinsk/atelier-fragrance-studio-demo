@@ -52,6 +52,23 @@ export function mergeBackup(currentState, backupState) {
   return { state: validated, imported: collections.reduce((sum, collection) => sum + (incoming[collection]?.filter(record => !(current[collection] || []).some(item => item.id === record.id)).length || 0), 0), conflicts };
 }
 
+export function previewBackupMerge(currentState, backupState) {
+  const current = validateState(currentState);
+  const incoming = validateState(backupState);
+  const collections = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'stockMovements', 'companionEntries', 'calculations', 'attachments'];
+  const conflicts = [];
+  let imported = 0;
+  for (const collection of collections) {
+    const currentRecords = current[collection] || [];
+    for (const record of incoming[collection] || []) {
+      const existing = currentRecords.find(item => item.id === record.id);
+      if (!existing) imported += 1;
+      else if (JSON.stringify(existing) !== JSON.stringify(record)) conflicts.push({ collection, id: record.id, reason: 'conflicting-record' });
+    }
+  }
+  return { imported, conflicts, collections: collections.map(collection => ({ collection, incoming: incoming[collection]?.length || 0, current: current[collection]?.length || 0 })) };
+}
+
 export function replaceWithBackup(backupState) { return validateState(normalizeState(backupState)); }
 
 export function legacyCompanionKey() { return LEGACY_COMPANION_STORAGE_KEY; }

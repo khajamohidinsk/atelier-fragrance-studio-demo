@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addRevision, addStockMovement, batchSummary, createInitialState, deleteCompanionEntry, deleteLot, deleteMaterial, exportState, importLegacyCompanionEntries, normalizeState, reconcileLotOpening, reverseStockMovement, saveState, stockBalance, stockStatus, updateCompanionEntry, updateJournalEntry, validateState } from '../src/domain/store.mjs';
+import { addBatch, addCompanionEntry, addEvaluation, addExperiment, addJournalEntry, addMaterial, addMaterialLot, addRevision, addStockMovement, batchSummary, createInitialState, deleteCompanionEntry, deleteLot, deleteMaterial, exportState, importLegacyCompanionEntries, inventorySummary, normalizeState, reconcileLot, reconcileLotOpening, reverseStockMovement, saveState, stockBalance, stockStatus, updateCompanionEntry, updateJournalEntry, validateState } from '../src/domain/store.mjs';
 
 test('normalizeState never fills incomplete state with demo seed records', () => {
   const normalized = normalizeState({ version: 2 });
@@ -137,7 +137,7 @@ test('stock movement rejects mismatched lots, incompatible units, duplicate ids,
   assert.throws(() => addStockMovement(state, { materialId: 'material-seed-2', materialLotId: 'lot-seed-1', movementType: 'receipt', quantity: 1, unit: 'g' }), /do not match/);
   assert.throws(() => addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'receipt', quantity: 1, unit: 'mL' }), /Density/);
   assert.throws(() => addStockMovement(state, { id: 'movement-seed-1', materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'receipt', quantity: 1, unit: 'g' }), /already exists/);
-  assert.throws(() => addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'wastage', quantity: 1000, unit: 'g' }), /Insufficient/);
+  assert.throws(() => addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'wastage', quantity: 1000, unit: 'g', note: 'Synthetic spill test' }), /Insufficient/);
 });
 
 test('batch consumption is linked once to an exact lot and duplicate additions are rejected', () => {
@@ -357,4 +357,69 @@ test('reconcileLotOpening records a user-supplied opening and unblocks consumpti
 test('reconcileLotOpening refuses to overwrite an established opening', () => {
   const state = createInitialState();
   assert.throws(() => reconcileLotOpening(state, 'lot-seed-1', { quantity: 999, unit: 'g' }), /already has an established opening/);
+});
+
+test('returns require explicit confirmation and increase the lot balance', () => {
+  const before = stockBalance(createInitialState(), 'lot-seed-1');
+  assert.throws(() => addStockMovement(createInitialState(), { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'return', quantity: 2, unit: 'g', note: 'Returned' }), /explicit confirmation/);
+  const state = addStockMovement(createInitialState(), { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'return', quantity: 2, unit: 'g', confirmedReturn: true, note: 'Customer return confirmed' });
+  assert.equal(stockBalance(state, 'lot-seed-1'), before + 2);
+});
+
+test('corrections are compensating movements tied to the original lot movement', () => {
+  const state = createInitialState();
+  assert.throws(() => addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'correction', quantity: 1, unit: 'g', direction: 'increase', note: 'Correction' }), /referenceMovementId/);
+  assert.throws(() => addStockMovement(state, { materialId: 'material-seed-2', materialLotId: 'lot-seed-2', movementType: 'correction', quantity: 1, unit: 'g', direction: 'increase', referenceMovementId: 'movement-seed-opening-1', note: 'Wrong lot' }), /same lot/);
+  const withReceipt = addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'receipt', quantity: 3, unit: 'g', note: 'Recorded receipt' });
+  const receipt = withReceipt.stockMovements.at(-1);
+  const corrected = addStockMovement(withReceipt, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'correction', quantity: 1, unit: 'g', direction: 'decrease', referenceMovementId: receipt.id, note: 'Corrected receipt count' });
+  assert.equal(corrected.stockMovements.at(-1).referenceMovementId, receipt.id);
+});
+
+test('adjustments and disposals require an auditable reason', () => {
+  const state = createInitialState();
+  assert.throws(() => addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'adjustment', quantity: 1, unit: 'g', direction: 'increase', note: 'Count' }), /explicit verification/);
+  assert.throws(() => addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'adjustment', quantity: 1, unit: 'g', direction: 'increase', verified: true }), /require a reason/);
+  assert.throws(() => addStockMovement(state, { materialId: 'material-seed-1', materialLotId: 'lot-seed-1', movementType: 'wastage', quantity: 1, unit: 'g' }), /require a reason/);
+});
+
+test('reconciliation previews and records only the variance', () => {
+  const result = reconcileLot(createInitialState(), 'lot-seed-1', { physicalQuantity: 75, unit: 'g', reason: 'Verified bottle count' });
+  assert.equal(result.variance, -5);
+  assert.equal(stockBalance(result.state, 'lot-seed-1'), 75);
+  const adjustment = result.state.stockMovements.at(-1);
+  assert.equal(adjustment.movementType, 'adjustment');
+  assert.equal(adjustment.direction, 'decrease');
+});
+
+test('material and lot operations preserve unknown values and reject duplicate lot codes', () => {
+  let state = { ...createInitialState(), materials: [], stockMovements: [], revisions: [], batches: [], experiments: [], evaluations: [], journalEntries: [] };
+  state = addMaterial(state, { name: 'Unknown jasmine', supplier: 'Supplier not recorded' });
+  const materialId = state.materials[0].id;
+  state = addMaterialLot(state, materialId, { lotCode: 'JAS-1' });
+  assert.equal(state.materials[0].lots[0].receivedAmount, undefined);
+  assert.equal(stockStatus(state, state.materials[0].lots[0].id).balanceKnown, false);
+  assert.throws(() => addMaterialLot(state, materialId, { lotCode: 'JAS-1' }), /already used/);
+});
+
+test('batch retries with the same idempotency key do not duplicate consumption', () => {
+  let state = { ...createInitialState(), experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [], stockMovements: createInitialState().stockMovements.slice(0, 2) };
+  state = addExperiment(state, { title: 'Idempotent trial', objective: 'Retry safety' });
+  const experiment = state.experiments[0];
+  state = addRevision(state, experiment.id, { ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 1, unit: 'g' }] });
+  const revision = state.revisions[0];
+  const input = { formulaRevisionId: revision.id, plannedAmount: 1, unit: 'g', idempotencyKey: 'request-1', actualAdditions: [{ id: 'retry-addition', materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 1, unit: 'g', concentration: 100 }] };
+  const first = addBatch(state, experiment.id, input);
+  const second = addBatch(first, experiment.id, input);
+  assert.equal(second.batches.length, first.batches.length);
+  assert.equal(second.stockMovements.length, first.stockMovements.length);
+});
+
+test('inventory summary exposes unknown, low-stock, and date warnings', () => {
+  let state = createInitialState();
+  state = { ...state, materials: state.materials.map(material => ({ ...material, lots: material.lots.map(lot => lot.id === 'lot-seed-1' ? { ...lot, lowStockThreshold: 90, expiryDate: '2020-01-01' } : lot) })) };
+  const summary = inventorySummary(state, { today: '2026-10-24' });
+  assert.equal(summary.lowStock.length, 1);
+  assert.equal(summary.dateWarnings.length, 1);
+  assert.equal(summary.unknownLots.length, 0);
 });
