@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BACKUP_FORMAT, createBackup, mergeBackup, parseBackup, previewBackupMerge, serializeBackup } from '../src/domain/backup.mjs';
-import { addBatch, addExperiment, addRevision, createInitialState } from '../src/domain/store.mjs';
+import { BACKUP_FORMAT, createBackup, mergeBackup, parseBackup, previewBackupMerge, previewBackupReplace, serializeBackup } from '../src/domain/backup.mjs';
+import { addBatch, addExperiment, addRevision, createInitialState, recordSensoryEvaluation } from '../src/domain/store.mjs';
 
 test('backup export and import round-trip preserves collections and IDs', () => {
   const state = createInitialState();
@@ -34,6 +34,7 @@ test('backup envelope rejects missing or invalid schema versions', () => {
   assert.throws(() => parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: '2', state: {} })), /schema version/);
   assert.throws(() => parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: 0, state: {} })), /schema version/);
   assert.throws(() => parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: 1.5, state: {} })), /schema version/);
+  assert.throws(() => parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: 1, state: { version: 2 } })), /contradicts/);
 });
 
 test('backup envelope rejects a non-object state payload', () => {
@@ -88,4 +89,67 @@ test('backup round-trip preserves physical batch metadata, additions, and stock 
   const restored = parseBackup(serializeBackup(state));
   assert.deepEqual(restored.state.batches, state.batches);
   assert.ok(restored.state.stockMovements.some(item => item.additionId === 'addition-backup-1' && item.batchId === state.batches[0].id));
+});
+
+test('backup round-trip preserves multi-interval sensory evidence and provenance fields', () => {
+  const seed = createInitialState();
+  let state = { ...seed, experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [], stockMovements: seed.stockMovements.filter(item => item.movementType === 'opening') };
+  state = addExperiment(state, { title: 'Backup sensory timeline', objective: 'Preserve B5 evidence' });
+  const experiment = state.experiments[0];
+  state = addRevision(state, experiment.id, { ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 2, unit: 'g' }] });
+  const revision = state.revisions[0];
+  state = addBatch(state, experiment.id, { batchCode: 'BATCH-SENSORY-1', formulaRevisionId: revision.id, plannedAmount: 2, unit: 'g', actualAdditions: [{ id: 'addition-sensory-1', materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 2, unit: 'g', concentration: 100 }] });
+  const batch = state.batches[0];
+  state = recordSensoryEvaluation(state, experiment.id, { batchId: batch.id, evaluatedAt: '2026-10-24T08:00:00.000Z', elapsedMinutes: 10, intervalLabel: 'Opening', subjectiveNotes: 'Bright', predictedOutcome: 'Will soften', provenance: 'subjective' });
+  state = recordSensoryEvaluation(state, experiment.id, { batchId: batch.id, evaluatedAt: '2026-10-25T08:00:00.000Z', elapsedMinutes: 1450, intervalLabel: '24 hours', measuredResults: 'Timed blotter check', isMeasured: true, longevityObservation: 'Present', longevityMethod: 'Timed check', projectionObservation: 'Close', projectionMethod: 'Observer estimate', conclusions: 'Recorded persistence', nextSteps: 'Repeat on skin' });
+  const restored = parseBackup(serializeBackup(state));
+  assert.deepEqual(restored.state.evaluations, state.evaluations);
+  assert.equal(restored.state.evaluations[0].provenance, 'measured');
+  assert.equal(restored.state.evaluations[1].predictedOutcome, 'Will soften');
+});
+
+test('full populated backup round-trip preserves relationships, units, timestamps, planned quantities, and actual additions', () => {
+  const state = createInitialState();
+  const restored = parseBackup(serializeBackup(state, { exportedAt: '2026-10-25T00:00:00.000Z' })).state;
+  assert.deepEqual(restored, state);
+  assert.equal(restored.batches[0].plannedAmount, 100);
+  assert.equal(restored.batches[0].actualAdditions[0].amount, 20);
+  assert.equal(restored.batches[0].actualAdditions[0].unit, 'g');
+  assert.equal(restored.evaluations[0].provenance, 'synthetic-demo');
+  assert.equal(restored.stockMovements.find(item => item.id === 'movement-seed-1').batchId, restored.batches[0].id);
+});
+
+test('supported schema version 1 backup migrates explicitly to the current state schema', () => {
+  const legacy = createInitialState();
+  legacy.version = 1;
+  legacy.stockMovements = undefined;
+  legacy.batches = legacy.batches.map(batch => ({ ...batch, actualAdditions: batch.actualAdditions.map(({ stockMovementId, ...addition }) => addition) }));
+  const payload = parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: 1, application: 'Atelier Scent Lab', exportedAt: '2026-10-25T00:00:00.000Z', state: legacy }));
+  assert.equal(payload.migratedFromSchemaVersion, 1);
+  assert.equal(payload.state.version, 2);
+  assert.ok(payload.state.stockMovements.some(item => item.provenance === 'migration'));
+});
+
+test('re-importing the same backup is duplicate-safe and replacement preview reports destructive records', () => {
+  const current = createInitialState();
+  const incoming = { ...current, journalEntries: [{ ...current.journalEntries[0], title: 'Changed elsewhere' }, ...current.journalEntries.slice(1)] };
+  const first = mergeBackup(current, incoming);
+  const second = mergeBackup(first.state, incoming);
+  assert.equal(first.imported, 0);
+  assert.equal(second.imported, 0);
+  assert.equal(new Set(second.state.journalEntries.map(item => item.id)).size, second.state.journalEntries.length);
+  const preview = previewBackupReplace(current, incoming);
+  assert.equal(preview.mode, 'replace');
+  assert.equal(preview.changedRecords.length, 1);
+  assert.ok(preview.overwritten.some(item => item.id === current.journalEntries[0].id));
+  assert.ok(preview.preserved.length > 0);
+});
+
+test('preview reports missing references without applying an invalid backup', () => {
+  const current = createInitialState();
+  const invalid = { ...current, experiments: [{ ...current.experiments[0], formulaRevisionIds: ['missing-revision'] }] };
+  const preview = previewBackupMerge(current, invalid);
+  assert.equal(preview.valid, false);
+  assert.ok(preview.missingReferences.some(message => message.includes('invalid revision link')));
+  assert.equal(current.experiments[0].formulaRevisionIds[0], 'revision-seed-1');
 });

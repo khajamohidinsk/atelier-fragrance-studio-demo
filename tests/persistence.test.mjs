@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyBackupImport, bootstrapState, createMemoryAdapter, createLocalStorageAdapter, persistState, previewBackupImport } from '../src/domain/persistence.mjs';
+import { applyBackupImport, bootstrapState, createMemoryAdapter, createLocalStorageAdapter, persistState, previewBackupImport, restoreRecoveryBackup } from '../src/domain/persistence.mjs';
 import { addStockMovement, createInitialState, loadState, saveState, stockStatus } from '../src/domain/store.mjs';
 import { serializeBackup } from '../src/domain/backup.mjs';
 
@@ -74,6 +74,30 @@ test('backup preview is available before a merge is persisted', () => {
   const preview = previewBackupImport(current, incoming, { mode: 'merge' });
   assert.equal(preview.imported, 1);
   assert.equal(current.journalEntries.some(item => item.id === 'preview-1'), false);
+});
+
+test('replacement creates a recoverable versioned backup and restores the previous state', () => {
+  const original = createInitialState();
+  const replacement = { ...original, journalEntries: [{ ...original.journalEntries[0], title: 'Replacement state' }] };
+  const adapter = createMemoryAdapter(original);
+  const replaced = applyBackupImport(adapter, JSON.parse(serializeBackup(replacement)), { mode: 'replace', currentState: original, locked: false });
+  assert.equal(replaced.ok, true);
+  assert.equal(replaced.recoveryCreated, true);
+  assert.equal(adapter.load().journalEntries[0].title, 'Replacement state');
+  const restored = restoreRecoveryBackup(adapter, { currentState: adapter.load(), locked: false });
+  assert.equal(restored.ok, true);
+  assert.equal(restored.state.journalEntries[0].title, 'Rain on warm stone');
+});
+
+test('replacement aborts before the main write when the recovery backup cannot be saved', () => {
+  const original = createInitialState();
+  const writes = [];
+  const adapter = { load: () => original, save: next => { writes.push(next); return next; }, saveRecovery: () => { throw new Error('recovery disk full'); } };
+  const replacement = { ...original, journalEntries: [{ ...original.journalEntries[0], title: 'Unsafe replacement' }] };
+  const result = applyBackupImport(adapter, JSON.parse(serializeBackup(replacement)), { mode: 'replace', currentState: original, locked: false });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /recovery disk full/);
+  assert.equal(writes.length, 0);
 });
 
 test('batch consumption is blocked on an unreconciled lot through the app persistence path', () => {
