@@ -2,7 +2,7 @@ import { CURRENT_SCHEMA_VERSION, LEGACY_COMPANION_STORAGE_KEY, normalizeState, v
 
 export const BACKUP_FORMAT = 'atelier-scent-lab-backup';
 export const BACKUP_VERSION = 1;
-export const BACKUP_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'stockMovements', 'companionEntries', 'calculations', 'attachments', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements'];
+export const BACKUP_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'stockMovements', 'companionEntries', 'calculations', 'attachments', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements', 'purchases', 'purchaseLineItems'];
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
@@ -52,6 +52,13 @@ export function mergeBackup(currentState, backupState) {
     }
     merged[collection] = records;
   }
+  const incomingMaterials = new Map((incoming.materials || []).map(material => [material.id, material]));
+  merged.materials = (merged.materials || []).map(material => {
+    const incomingMaterial = incomingMaterials.get(material.id);
+    if (!incomingMaterial) return material;
+    const incomingLots = new Map((incomingMaterial.lots || []).map(lot => [lot.id, lot]));
+    return { ...material, lots: (material.lots || []).map(lot => { const incomingLot = incomingLots.get(lot.id); return incomingLot ? { ...lot, purchaseLineItemIds: [...new Set([...(lot.purchaseLineItemIds || []), ...(incomingLot.purchaseLineItemIds || [])])] } : lot; }) };
+  });
   merged.tags = [...new Set([...(current.tags || []), ...(incoming.tags || [])])];
   const validated = validateState(merged);
   return { state: validated, imported: BACKUP_COLLECTIONS.reduce((sum, collection) => sum + (incoming[collection]?.filter(record => !(current[collection] || []).some(item => item.id === record.id)).length || 0), 0), conflicts };
