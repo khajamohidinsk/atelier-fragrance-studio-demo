@@ -20,6 +20,7 @@ The core workflow is functional in the browser:
 12. Open Experiment Coach for a read-only, source-linked debrief and a proposed next controlled experiment.
 13. Register lab equipment, append verification and maintenance history, and record linked measurements without inventing units or calibration evidence.
 14. Record receipt-backed purchases against material lots and cost physical batches from their actual additions.
+15. Create blind sensory sessions that randomize physical batches into opaque codes, collect evaluator observations, lock progress, and explicitly unblind results.
 
 ## Features
 
@@ -33,6 +34,7 @@ The core workflow is functional in the browser:
 - Evidence-aware sensory journal: record multiple timestamped intervals for a physical batch with elapsed time, medium, environment, conditions, descriptors, subjective notes, measured results, longevity/projection methods, predicted outcomes, conclusions, and next steps. Subjective, measured, predicted, AI-generated, synthetic, and missing evidence remain distinct.
 - Equipment log: record equipment identity, status, resolution, verification outcomes/due dates, maintenance/fault events, and measurements linked to batches, experiments, journal entries, or evaluations. Verification remains unknown until evidence is recorded; overdue, failed, conditional, maintenance, out-of-service, and retired states stay visible as operational warnings.
 - Purchase costs and batch costing: preserve supplier, date, invoice/reference, currency, receipt evidence, line-level quantity/unit/price/total, discount/tax/shipping, lot links, and historical prices. Batch costing uses actual additions and an explicit lot receipt source; missing evidence, ambiguous receipts, and incompatible units remain uncosted instead of being estimated.
+- Blind sensory testing: create sessions from existing physical batches, persist a Fisher–Yates randomized order and opaque `BT-` sample codes, record existing sensory-evaluation fields without exposing identities, require one observation per sample before locking, and reveal code-to-batch/formula mappings only through an explicit unblind action. This is a workflow safeguard over browser-local state, not cryptographic access control.
 - Sensory timeline records for multiple intervals after mixing and a comparison view that keeps subjective impressions separate from measured-result text.
 - Keyboard-friendly dialogs, readable tables, responsive mobile layouts, empty states, sample-data warnings, and local JSON export.
 
@@ -57,13 +59,14 @@ tests/calculations.test.mjs Calculation unit tests
 tests/store.test.mjs        Store, stock-ledger, and relationship tests
 tests/equipment.test.mjs    Equipment, verification, maintenance, measurement tests
 tests/purchase-costs.test.mjs Purchase evidence and actual batch costing tests
+tests/blind-sensory.test.mjs Blind session, shuffle, lock, and unblind tests
 tests/backup.test.mjs       Backup validation, merge, and round-trip tests
 tests/persistence.test.mjs  Adapter and legacy migration tests
 tests/comparison.test.mjs   Deterministic comparison and summary tests
 scripts/                    Lint, type-model, and static build checks
 ```
 
-The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, equipment, verification events, maintenance events, measurements, Companion observations, stock movements, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, equipment, verification events, maintenance events, measurements, purchases, purchase line items, blind-testing sessions and samples, Companion observations, stock movements, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
 
 ## Stock ledger and history integrity
 
@@ -91,9 +94,15 @@ Open **Purchases & costs** to record a supplier receipt and link each purchase l
 
 Each purchase line preserves its purchased quantity, unit, unit price, line total, and source receipt. Purchase-level discount, tax, and shipping are allocated proportionally across line totals when a non-zero subtotal exists. Actual batch costing uses the quantities recorded in `actualAdditions`, converts only compatible units (or uses the lot density for an explicit mass/volume bridge), and shows costable subtotals by currency separately from uncosted additions. If several receipt lines exist for the same lot, the actual addition must identify the exact purchase line; the system never silently selects a newer price.
 
+### Blind sensory testing
+
+Open **Blind sensory testing** to create a session from two or more physical batches. Draft sessions show candidate identities to the session creator so the candidate set can be checked. Once randomized, the session stores an unbiased Fisher–Yates order and opaque `BT-` codes; the evaluator-facing view exposes only those codes. Observations reuse the existing sensory-evaluation fields and remain subjective/measured/provenance-aware. Every sample needs at least one recorded observation before the session can be locked. Locked observations are finalized, and only an explicit **Unblind session** action reveals the mapping to batch codes, experiment titles, and formula revisions.
+
+Reloading, navigation, and backup restore reuse the saved assignment rather than reshuffling. The browser-local workflow is not a security boundary: someone with access to localStorage or developer tools can inspect the underlying mapping.
+
 ## Versioned backup and persistence adapter
 
-Backups use the envelope `{format: "atelier-scent-lab-backup", backupVersion: 1, schemaVersion: 2, application, exportedAt, state}`. Schema version 1 is accepted and migrated to the current state schema; future schema versions are rejected before any write. Export includes the complete validated local state: journal and experiment relationships, immutable revisions, materials/lots, append-only stock movements, physical batches and actual additions, sensory evaluations, equipment registry/history, measurements, purchase receipts and line items, lot-price links, Companion observations, calculations, attachments, tags, IDs, timestamps, and provenance. Planned formula quantities remain separate from actual batch additions, and subjective, measured, predicted, AI-generated, and synthetic-demo records remain distinguishable.
+Backups use the envelope `{format: "atelier-scent-lab-backup", backupVersion: 1, schemaVersion: 2, application, exportedAt, state}`. Schema version 1 is accepted and migrated to the current state schema; future schema versions are rejected before any write. Export includes the complete validated local state: journal and experiment relationships, immutable revisions, materials/lots, append-only stock movements, physical batches and actual additions, sensory evaluations, equipment registry/history, measurements, purchase receipts and line items, lot-price links, blind-testing sessions and randomized sample assignments, Companion observations, calculations, attachments, tags, IDs, timestamps, and provenance. Planned formula quantities remain separate from actual batch additions, and subjective, measured, predicted, AI-generated, and synthetic-demo records remain distinguishable.
 
 Import validates JSON, format/version, record IDs, units, quantities, duplicate movements, reversal references, ledger replay, and entity relationships before applying anything. The import dialog previews new records, changed IDs, identical/preserved IDs, records discarded by replacement, and missing-reference errors. Merge adds only missing IDs and keeps current conflicting records without overwriting them. Replace explicitly replaces the local state only after validation and first stores the current validated state in the same versioned backup envelope as a recovery backup. The recovery action can restore that previous local state after a replacement. Re-importing the same file is idempotent, and a failed persistence or recovery write leaves the prior saved state intact. The current version-1 local state and legacy `atelier.scent-companion.v1` data are migrated without deleting the source until the new state has been saved successfully.
 
@@ -123,7 +132,7 @@ The current persistence boundary is browser-local `localStorage`: it survives re
 
 ### Browser acceptance tests
 
-The repeatable browser suites are `tests/browser/b6-portability.spec.mjs`, `tests/browser/coach.spec.mjs`, `tests/browser/equipment.spec.mjs`, and `tests/browser/purchase-costs.spec.mjs`. They use Playwright with isolated browser contexts, real JSON files, the hidden import file input via `setInputFiles()`, actual UI export downloads, reload readback, duplicate-safe merge, conflict preview, replacement recovery, invalid-file safety, Companion/batch/evaluation round trips, equipment registry/history/measurement flows, receipt-backed purchase entry, and partial actual batch costing. Run `npm run test:browser`; the Playwright Chromium browser is installed with `npx playwright install chromium` when needed. The suites use synthetic fixture data only and do not require AI configuration, credentials, network services, or a database.
+The repeatable browser suites are `tests/browser/b6-portability.spec.mjs`, `tests/browser/coach.spec.mjs`, `tests/browser/equipment.spec.mjs`, `tests/browser/purchase-costs.spec.mjs`, and `tests/browser/blind-sensory.spec.mjs`. They use Playwright with isolated browser contexts, real JSON files, the hidden import file input via `setInputFiles()`, actual UI export downloads, reload readback, duplicate-safe merge, conflict preview, replacement recovery, invalid-file safety, Companion/batch/evaluation round trips, equipment registry/history/measurement flows, receipt-backed purchase entry, partial actual batch costing, and blind randomization/observation/lock/unblind flows. Run `npm run test:browser`; the Playwright Chromium browser is installed with `npx playwright install chromium` when needed. The suites use synthetic fixture data only and do not require AI configuration, credentials, network services, or a database.
 
 ### Free local AI with Ollama (no API key)
 
