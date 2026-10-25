@@ -12,6 +12,7 @@ export const maintenanceEventTypes = ['maintenance', 'inspection', 'repair', 'fa
 export const PURCHASE_EVIDENCE_MAX_BYTES = 2 * 1024 * 1024;
 export const purchaseEvidenceKinds = ['file', 'reference'];
 export const blindSessionStatuses = ['draft', 'randomized', 'in-progress', 'locked', 'unblinded'];
+export const maturationEvidenceStatuses = ['complete', 'incomplete'];
 export const STOCK_PRECISION = 1e-9;
 
 const now = () => new Date().toISOString();
@@ -229,11 +230,11 @@ export function createInitialState() {
       { id: 'movement-seed-1', materialId, materialLotId: 'lot-seed-1', movementType: 'consumption', quantity: 20, unit: 'g', occurredAt: '2026-10-10T09:30:00.000Z', batchId, additionId: 'addition-seed-1', note: 'Seed batch consumption.', provenance: 'synthetic-demo' },
       { id: 'movement-seed-2', materialId: 'material-seed-2', materialLotId: 'lot-seed-2', movementType: 'consumption', quantity: 80, unit: 'g', occurredAt: '2026-10-10T09:30:00.000Z', batchId, additionId: 'addition-seed-2', note: 'Seed batch consumption.', provenance: 'synthetic-demo' }
     ],
-    calculations: [], tags: ['atmospheric', 'woody', 'fresh'], attachments: [], companionEntries: [], equipment: [], verificationEvents: [], maintenanceEvents: [], measurements: [], purchases: [], purchaseLineItems: [], blindSessions: [], blindSamples: []
+    calculations: [], tags: ['atmospheric', 'woody', 'fresh'], attachments: [], companionEntries: [], equipment: [], verificationEvents: [], maintenanceEvents: [], measurements: [], purchases: [], purchaseLineItems: [], blindSessions: [], blindSamples: [], maturationPlans: [], maturationCheckpoints: [], maturationObservations: []
   };
 }
 
-const STATE_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'calculations', 'tags', 'attachments', 'companionEntries', 'stockMovements', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements', 'purchases', 'purchaseLineItems', 'blindSessions', 'blindSamples'];
+const STATE_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'calculations', 'tags', 'attachments', 'companionEntries', 'stockMovements', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements', 'purchases', 'purchaseLineItems', 'blindSessions', 'blindSamples', 'maturationPlans', 'maturationCheckpoints', 'maturationObservations'];
 
 export function normalizeState(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Atelier state must be a JSON object.');
@@ -288,6 +289,7 @@ export function validateState(state) {
   const equipmentIds = allIds(normalized.equipment, 'equipment'); allIds(normalized.verificationEvents, 'verification event'); allIds(normalized.maintenanceEvents, 'maintenance event'); allIds(normalized.measurements, 'measurement');
   const purchaseIds = allIds(normalized.purchases, 'purchase'); allIds(normalized.purchaseLineItems, 'purchase line item');
   const blindSessionIds = allIds(normalized.blindSessions, 'blind session'); const blindSampleIds = allIds(normalized.blindSamples, 'blind sample');
+  const maturationPlanIds = allIds(normalized.maturationPlans, 'maturation plan'); const maturationCheckpointIds = allIds(normalized.maturationCheckpoints, 'maturation checkpoint'); allIds(normalized.maturationObservations, 'maturation observation');
   const materialIds = allIds(normalized.materials, 'material');
   const lotIds = new Set();
   for (const material of normalized.materials) {
@@ -405,6 +407,43 @@ export function validateState(state) {
     if (['locked', 'unblinded'].includes(session.status) && evaluation.blindLockedAt !== session.lockedAt) throw new Error(`Blind evaluation ${evaluation.id} is not finalized with its locked session.`);
   }
   for (const session of normalized.blindSessions) if (['locked', 'unblinded'].includes(session.status)) for (const sampleId of session.sampleIds) if (!normalized.evaluations.some(item => item.blindSessionId === session.id && item.blindSampleId === sampleId)) throw new Error(`Blind session ${session.id} is finalized with an incomplete sample.`);
+  const checkpointsByPlan = new Map();
+  for (const plan of normalized.maturationPlans) {
+    requireText(plan.name, `Maturation plan ${plan.id} name`); requireText(plan.purpose, `Maturation plan ${plan.id} purpose`); timestamp(plan.maturationStartAt, `Maturation plan ${plan.id} start date`);
+    const batch = normalized.batches.find(item => item.id === plan.batchId); const experiment = normalized.experiments.find(item => item.id === plan.experimentId); const revision = normalized.revisions.find(item => item.id === plan.revisionId);
+    if (!batch || !experiment || !revision || batch.experimentId !== plan.experimentId || batch.formulaRevisionId !== plan.revisionId || revision.experimentId !== plan.experimentId) throw new Error(`Maturation plan ${plan.id} has invalid batch, experiment, or formula revision links.`);
+    if (!Array.isArray(plan.checkpointIds) || !plan.checkpointIds.length || new Set(plan.checkpointIds).size !== plan.checkpointIds.length) throw new Error(`Maturation plan ${plan.id} must contain unique checkpoints.`);
+    if (!Array.isArray(plan.tags)) throw new Error(`Maturation plan ${plan.id} tags must be an array.`);
+    if (plan.createdAt) timestamp(plan.createdAt, `Maturation plan ${plan.id} createdAt`); if (plan.updatedAt) timestamp(plan.updatedAt, `Maturation plan ${plan.id} updatedAt`);
+    checkpointsByPlan.set(plan.id, new Set(plan.checkpointIds));
+  }
+  const ordersByPlan = new Map();
+  for (const checkpoint of normalized.maturationCheckpoints) {
+    if (!maturationPlanIds.has(checkpoint.planId)) throw new Error(`Maturation checkpoint ${checkpoint.id} references an unknown plan.`);
+    if (!checkpointsByPlan.get(checkpoint.planId)?.has(checkpoint.id)) throw new Error(`Maturation plan ${checkpoint.planId} is missing checkpoint ${checkpoint.id}.`);
+    requireText(checkpoint.label, `Maturation checkpoint ${checkpoint.id} label`);
+    if (!Number.isInteger(checkpoint.order) || checkpoint.order < 1) throw new Error(`Maturation checkpoint ${checkpoint.id} order is invalid.`);
+    if (checkpoint.offsetMinutes === undefined && checkpoint.plannedAt === undefined) throw new Error(`Maturation checkpoint ${checkpoint.id} needs a date or elapsed-time offset.`);
+    if (checkpoint.offsetMinutes !== undefined) nonNegativeFinite(checkpoint.offsetMinutes, `Maturation checkpoint ${checkpoint.id} offset`);
+    if (checkpoint.plannedAt !== undefined) timestamp(checkpoint.plannedAt, `Maturation checkpoint ${checkpoint.id} planned date`);
+    const orders = ordersByPlan.get(checkpoint.planId) || new Set(); if (orders.has(checkpoint.order)) throw new Error(`Maturation plan ${checkpoint.planId} contains duplicate checkpoint ordering.`); orders.add(checkpoint.order); ordersByPlan.set(checkpoint.planId, orders);
+  }
+  for (const plan of normalized.maturationPlans) for (const checkpointId of plan.checkpointIds) if (!maturationCheckpointIds.has(checkpointId)) throw new Error(`Maturation plan ${plan.id} references an unknown checkpoint.`);
+  const equipmentIdSet = new Set(normalized.equipment.map(item => item.id)); const measurementIdSet = new Set(normalized.measurements.map(item => item.id));
+  for (const observation of normalized.maturationObservations) {
+    const plan = normalized.maturationPlans.find(item => item.id === observation.planId); const checkpoint = normalized.maturationCheckpoints.find(item => item.id === observation.checkpointId);
+    if (!plan || !checkpoint || checkpoint.planId !== plan.id) throw new Error(`Maturation observation ${observation.id} has an invalid plan or checkpoint link.`);
+    if (observation.batchId !== plan.batchId || observation.experimentId !== plan.experimentId || observation.revisionId !== plan.revisionId) throw new Error(`Maturation observation ${observation.id} does not preserve its plan batch and formula revision links.`);
+    timestamp(observation.observedAt, `Maturation observation ${observation.id} date`); if (observation.elapsedMinutes !== undefined) { if (typeof observation.elapsedMinutes !== 'number' || !Number.isFinite(observation.elapsedMinutes)) throw new Error(`Maturation observation ${observation.id} elapsed time is invalid.`); }
+    if (observation.storageTemperature !== undefined) { if (typeof observation.storageTemperature !== 'number' || !Number.isFinite(observation.storageTemperature)) throw new Error(`Maturation observation ${observation.id} storage temperature is invalid.`); measurementUnit(observation.storageTemperatureUnit, `Maturation observation ${observation.id} temperature unit`); }
+    if (observation.humidity !== undefined && (typeof observation.humidity !== 'number' || !Number.isFinite(observation.humidity) || observation.humidity < 0 || observation.humidity > 100)) throw new Error(`Maturation observation ${observation.id} humidity must be between 0 and 100%.`);
+    if (!Array.isArray(observation.attachmentRefs) || new Set(observation.attachmentRefs).size !== observation.attachmentRefs.length) throw new Error(`Maturation observation ${observation.id} attachments are invalid.`);
+    if (observation.evidenceStatus !== undefined && !maturationEvidenceStatuses.includes(observation.evidenceStatus)) throw new Error(`Maturation observation ${observation.id} evidence status is invalid.`);
+    if (!Array.isArray(observation.measuredValues)) throw new Error(`Maturation observation ${observation.id} measured values must be an array.`);
+    for (const measured of observation.measuredValues) { requireText(measured.label, `Maturation measured value ${measured.id || observation.id} label`); if (typeof measured.value !== 'number' || !Number.isFinite(measured.value)) throw new Error(`Maturation measured value ${measured.id || observation.id} must be finite.`); measurementUnit(measured.unit, `Maturation measured value ${measured.id || observation.id} unit`); if (measured.equipmentId && !equipmentIdSet.has(measured.equipmentId)) throw new Error(`Maturation measured value ${measured.id || observation.id} references unknown equipment.`); if (measured.measurementId && !measurementIdSet.has(measured.measurementId)) throw new Error(`Maturation measured value ${measured.id || observation.id} references unknown measurement.`); }
+    if (observation.supersedesObservationId) { const previous = normalized.maturationObservations.find(item => item.id === observation.supersedesObservationId); if (!previous || previous.planId !== observation.planId || previous.checkpointId !== observation.checkpointId || previous.id === observation.id) throw new Error(`Maturation observation ${observation.id} has an invalid correction link.`); }
+    if (observation.createdAt) timestamp(observation.createdAt, `Maturation observation ${observation.id} createdAt`); if (observation.updatedAt) timestamp(observation.updatedAt, `Maturation observation ${observation.id} updatedAt`);
+  }
   for (const material of normalized.materials) for (const lot of material.lots || []) for (const lineId of lot.purchaseLineItemIds) {
     const line = normalized.purchaseLineItems.find(item => item.id === lineId);
     if (!line || line.materialLotId !== lot.id || line.materialId !== material.id) throw new Error(`Lot ${lot.id} has an invalid purchase line link.`);
@@ -674,6 +713,92 @@ export function lockBlindSession(state, sessionId) {
 export function unblindSession(state, sessionId) {
   const normalized = normalizeState(state); const session = findBlindSession(normalized, sessionId); if (session.status !== 'locked') throw new Error('Only a locked blind session can be unblinded.');
   return validateState({ ...normalized, blindSessions: normalized.blindSessions.map(item => item.id === sessionId ? { ...item, status: 'unblinded', unblindedAt: now(), updatedAt: now() } : item) });
+}
+
+function findMaturationPlan(state, planId) {
+  const plan = state.maturationPlans.find(item => item.id === planId);
+  if (!plan) throw new Error(`Maturation plan "${planId}" was not found.`);
+  return plan;
+}
+
+function findMaturationCheckpoint(state, checkpointId) {
+  const checkpoint = state.maturationCheckpoints.find(item => item.id === checkpointId);
+  if (!checkpoint) throw new Error(`Maturation checkpoint "${checkpointId}" was not found.`);
+  return checkpoint;
+}
+
+function normalizeMaturationMeasuredValues(values = []) {
+  if (!Array.isArray(values)) throw new Error('Measured values must be an array.');
+  return values.map(item => ({
+    id: item.id || id('maturation-measurement'),
+    label: requireText(item.label, 'Measured value label'),
+    value: Number(item.value),
+    unit: measurementUnit(item.unit, 'Measured value unit'),
+    method: item.method || '',
+    equipmentId: item.equipmentId || undefined,
+    measurementId: item.measurementId || undefined,
+    notes: item.notes || ''
+  }));
+}
+
+function maturationPlannedAt(plan, checkpoint) {
+  if (checkpoint.plannedAt) return checkpoint.plannedAt;
+  return new Date(Date.parse(plan.maturationStartAt) + checkpoint.offsetMinutes * 60000).toISOString();
+}
+
+export function createMaturationPlan(state, input) {
+  const normalized = normalizeState(state);
+  const batch = normalized.batches.find(item => item.id === input.batchId);
+  if (!batch) throw new Error('Maturation plan batch was not found.');
+  const experiment = normalized.experiments.find(item => item.id === batch.experimentId);
+  const revision = normalized.revisions.find(item => item.id === batch.formulaRevisionId);
+  if (!experiment || !revision || revision.experimentId !== experiment.id) throw new Error('Maturation plan batch has invalid experiment or formula revision links.');
+  if (input.experimentId && input.experimentId !== experiment.id) throw new Error('Maturation plan experiment does not match the batch.');
+  if (input.revisionId && input.revisionId !== revision.id) throw new Error('Maturation plan formula revision does not match the batch.');
+  const startAt = timestamp(input.maturationStartAt || batch.mixingDate, 'Maturation start date');
+  const checkpointInputs = Array.isArray(input.checkpoints) ? input.checkpoints : [];
+  if (!checkpointInputs.length) throw new Error('At least one maturation checkpoint is required.');
+  const checkpoints = checkpointInputs.map((item, index) => {
+    const checkpoint = { id: item.id || id('maturation-checkpoint'), planId: input.id || id('maturation-plan'), label: requireText(item.label, 'Checkpoint label'), order: item.order === undefined ? index + 1 : Number(item.order), offsetMinutes: item.offsetMinutes === undefined || item.offsetMinutes === '' ? undefined : Number(item.offsetMinutes), plannedAt: item.plannedAt ? timestamp(item.plannedAt, 'Checkpoint planned date') : undefined, notes: item.notes || '' };
+    if (checkpoint.offsetMinutes === undefined && checkpoint.plannedAt === undefined) throw new Error(`Checkpoint ${checkpoint.label} needs a date or elapsed-time offset.`);
+    return checkpoint;
+  });
+  checkpoints.sort((a, b) => a.order - b.order || Date.parse(maturationPlannedAt({ maturationStartAt: startAt }, a)) - Date.parse(maturationPlannedAt({ maturationStartAt: startAt }, b)) || a.id.localeCompare(b.id));
+  const planId = input.id || checkpoints[0].planId;
+  const normalizedCheckpoints = checkpoints.map((checkpoint, index) => ({ ...checkpoint, planId, order: index + 1 }));
+  const plan = { id: planId, name: requireText(input.name, 'Maturation plan name'), purpose: requireText(input.purpose, 'Maturation plan purpose'), batchId: batch.id, experimentId: experiment.id, revisionId: revision.id, maturationStartAt: startAt, storageConditions: input.storageConditions || '', protocolNotes: input.protocolNotes || '', notes: input.notes || '', tags: Array.isArray(input.tags) ? input.tags : [], checkpointIds: normalizedCheckpoints.map(item => item.id), createdAt: input.createdAt || now(), updatedAt: now() };
+  if (normalized.maturationPlans.some(item => item.id === plan.id)) throw new Error(`Maturation plan ${plan.id} already exists.`);
+  return validateState({ ...normalized, maturationPlans: [plan, ...normalized.maturationPlans], maturationCheckpoints: [...normalizedCheckpoints, ...normalized.maturationCheckpoints] });
+}
+
+export function maturationPlanTimeline(state, planId, { asOf = new Date().toISOString() } = {}) {
+  const normalized = normalizeState(state); const plan = findMaturationPlan(normalized, planId); const asOfTime = Date.parse(asOf); if (Number.isNaN(asOfTime)) throw new Error('Maturation timeline asOf date is invalid.');
+  const checkpoints = plan.checkpointIds.map(id => findMaturationCheckpoint(normalized, id)).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+  const observations = normalized.maturationObservations.filter(item => item.planId === plan.id).sort((a, b) => String(a.observedAt).localeCompare(String(b.observedAt)) || a.id.localeCompare(b.id));
+  const rows = checkpoints.map(checkpoint => {
+    const plannedAt = maturationPlannedAt(plan, checkpoint); const checkpointObservations = observations.filter(item => item.checkpointId === checkpoint.id); const latest = checkpointObservations.at(-1);
+    return { checkpoint: { ...checkpoint }, plannedAt, observations: checkpointObservations, latestObservation: latest || null, status: latest ? 'completed' : Date.parse(plannedAt) < asOfTime ? 'overdue' : Date.parse(plannedAt) <= asOfTime ? 'due' : 'upcoming' };
+  });
+  const completed = observations.length; const incomplete = observations.some(item => item.evidenceStatus === 'incomplete');
+  const baseline = observations[0]; const later = observations.slice(1); const changed = baseline && later.some(item => [item.appearance, item.color, item.clarity, item.sediment, item.phaseSeparation, item.viscosity, item.subjectiveOdour, item.deviations].some(field => String(field || '').trim()) && JSON.stringify([item.appearance, item.color, item.clarity, item.sediment, item.phaseSeparation, item.viscosity, item.subjectiveOdour]) !== JSON.stringify([baseline.appearance, baseline.color, baseline.clarity, baseline.sediment, baseline.phaseSeparation, baseline.viscosity, baseline.subjectiveOdour]));
+  let evidenceStatus = 'Awaiting observations'; if (incomplete) evidenceStatus = 'Incomplete evidence'; else if (changed) evidenceStatus = 'Change observed'; else if (completed >= 2) evidenceStatus = 'No visible change recorded during the observed period'; else if (completed) evidenceStatus = 'Observations in progress';
+  return { plan: { ...plan }, batch: normalized.batches.find(item => item.id === plan.batchId), experiment: normalized.experiments.find(item => item.id === plan.experimentId), revision: normalized.revisions.find(item => item.id === plan.revisionId), checkpoints: rows, observations, baseline: baseline || null, evidenceStatus, elapsedMinutes: Math.max(0, Math.round((asOfTime - Date.parse(plan.maturationStartAt)) / 60000)), comparisons: later.map(item => ({ observation: item, baseline, changed: baseline ? JSON.stringify([item.appearance, item.color, item.clarity, item.sediment, item.phaseSeparation, item.viscosity, item.subjectiveOdour]) !== JSON.stringify([baseline.appearance, baseline.color, baseline.clarity, baseline.sediment, baseline.phaseSeparation, baseline.viscosity, baseline.subjectiveOdour]) : false })) };
+}
+
+export function recordMaturationObservation(state, planId, checkpointId, input) {
+  const normalized = normalizeState(state); const plan = findMaturationPlan(normalized, planId); const checkpoint = findMaturationCheckpoint(normalized, checkpointId);
+  if (checkpoint.planId !== plan.id) throw new Error('Maturation checkpoint does not belong to the plan.');
+  const observedAt = timestamp(input.observedAt, 'Observation date');
+  const measuredValues = normalizeMaturationMeasuredValues(input.measuredValues || []); const descriptors = Array.isArray(input.descriptors) ? input.descriptors : [];
+  const evidencePresent = [input.appearance, input.color, input.clarity, input.sediment, input.phaseSeparation, input.viscosity, input.subjectiveOdour, input.deviations, input.notes].some(value => String(value || '').trim()) || descriptors.length > 0 || measuredValues.length > 0;
+  const observation = { id: input.id || id('maturation-observation'), planId: plan.id, checkpointId: checkpoint.id, batchId: plan.batchId, experimentId: plan.experimentId, revisionId: plan.revisionId, observedAt, elapsedMinutes: input.elapsedMinutes === undefined || input.elapsedMinutes === '' ? Math.max(0, Math.round((Date.parse(observedAt) - Date.parse(plan.maturationStartAt)) / 60000)) : nonNegativeFinite(Number(input.elapsedMinutes), 'Observation elapsed time'), appearance: input.appearance || '', color: input.color || '', clarity: input.clarity || '', sediment: input.sediment || '', phaseSeparation: input.phaseSeparation || '', viscosity: input.viscosity || '', subjectiveOdour: input.subjectiveOdour || '', descriptors, storageTemperature: input.storageTemperature === undefined || input.storageTemperature === '' ? undefined : Number(input.storageTemperature), storageTemperatureUnit: input.storageTemperatureUnit || undefined, humidity: input.humidity === undefined || input.humidity === '' ? undefined : Number(input.humidity), storageLocation: input.storageLocation || '', containerType: input.containerType || '', closureSeal: input.closureSeal || '', lightExposure: input.lightExposure || '', environmentalConditions: input.environmentalConditions || '', handlingNotes: input.handlingNotes || '', deviations: input.deviations || '', notes: input.notes || '', attachmentRefs: Array.isArray(input.attachmentRefs) ? input.attachmentRefs : [], measuredValues, evidenceStatus: input.evidenceStatus || (evidencePresent ? 'complete' : 'incomplete'), supersedesObservationId: input.supersedesObservationId || undefined, createdAt: input.createdAt || now(), updatedAt: now() };
+  if (normalized.maturationObservations.some(item => item.id === observation.id)) throw new Error(`Maturation observation ${observation.id} already exists.`);
+  return validateState({ ...normalized, maturationObservations: [observation, ...normalized.maturationObservations] });
+}
+
+export function correctMaturationObservation(state, observationId, input) {
+  const normalized = normalizeState(state); const previous = normalized.maturationObservations.find(item => item.id === observationId); if (!previous) throw new Error('Maturation observation was not found.');
+  return recordMaturationObservation(normalized, previous.planId, previous.checkpointId, { ...previous, ...input, id: undefined, supersedesObservationId: previous.id, createdAt: undefined, updatedAt: undefined });
 }
 
 function findEquipment(state, equipmentId) {
