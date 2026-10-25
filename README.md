@@ -17,6 +17,7 @@ The core workflow is functional in the browser:
 9. Export and validate a versioned JSON backup, then merge or replace local state through an explicit import workflow.
 10. Compare revisions using deterministic ingredient/evaluation evidence and provenance warnings.
 11. Open Scent Companion for editable sensory notes, browser dictation, optional vocabulary guidance, and spoken formulation briefings.
+12. Open Experiment Coach for a read-only, source-linked debrief and a proposed next controlled experiment.
 
 ## Features
 
@@ -91,6 +92,12 @@ The browser-local boundary still means no cloud backup, cross-device synchroniza
 ## Recorded-data analysis and provenance
 
 `compareRevisions()` compares stable ingredient keys, quantities, units, concentrations, roles, lots, revision-linked batches, and revision-linked evaluations. It reports incompatible or differing evaluation conditions instead of implying a controlled comparison. `summarizeExperiment()` keeps recorded, measured, subjective, synthetic/demo, and AI-generated categories distinct and emits warnings when evidence is missing or provenance is incomplete. No causal conclusion or missing measurement is invented.
+
+## Experiment Coach
+
+`src/domain/coach.mjs` builds a read-only context from one experiment and its immutable formula revisions, physical batches, actual additions, planned-versus-actual comparison, journal entries, and chronological sensory evaluations. `createExperimentCoachDebrief()` returns evidence-linked claims with stable source IDs, explicit missing/contradictory evidence, provenance labels, and a proposed next controlled experiment containing a hypothesis, one primary variable, observation schedule, and success criterion. Proposed items are labelled hypotheses or protocol suggestions; they are never treated as observations, safety claims, or stock instructions.
+
+The Coach treats free-text observations as quoted, untrusted evidence. Instruction-like text is reported as a prompt-injection warning and is not executed or allowed to change the proposed protocol. The Coach does not write state, modify formulas, alter inventory, or call an AI provider. It reuses deterministic batch and revision comparison logic for arithmetic and provenance checks. The UI keeps this flow read-only and does not add a competing catalogue, research pipeline, or formula engine.
 
 ## Scent Companion
 
