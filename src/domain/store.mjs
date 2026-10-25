@@ -5,6 +5,10 @@ export const LEGACY_COMPANION_STORAGE_KEY = 'atelier.scent-companion.v1';
 export const CURRENT_SCHEMA_VERSION = 2;
 export const statuses = ['Draft', 'Mixed', 'Maturing', 'Evaluated', 'Archived'];
 export const movementTypes = ['opening', 'receipt', 'return', 'adjustment', 'consumption', 'wastage', 'correction', 'reversal'];
+export const equipmentTypes = ['balance', 'pipette', 'thermometer', 'other'];
+export const equipmentStatuses = ['available', 'under-maintenance', 'out-of-service', 'retired'];
+export const verificationOutcomes = ['pass', 'fail', 'conditional'];
+export const maintenanceEventTypes = ['maintenance', 'inspection', 'repair', 'fault'];
 export const STOCK_PRECISION = 1e-9;
 
 const now = () => new Date().toISOString();
@@ -40,6 +44,24 @@ function allIds(records, label) {
     seen.add(record.id);
   }
   return seen;
+}
+
+function timestamp(value, label) {
+  const result = value || now();
+  if (Number.isNaN(Date.parse(result))) throw new Error(`${label} is invalid.`);
+  return result;
+}
+
+function measurementUnit(value, label = 'Measurement unit') {
+  const result = requireText(value, label);
+  if (result.length > 40) throw new Error(`${label} is too long.`);
+  return result;
+}
+
+function optionalFinite(value, label) {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${label} must be a finite number.`);
+  return value;
 }
 
 function findMaterial(state, materialId) {
@@ -176,11 +198,11 @@ export function createInitialState() {
       { id: 'movement-seed-1', materialId, materialLotId: 'lot-seed-1', movementType: 'consumption', quantity: 20, unit: 'g', occurredAt: '2026-10-10T09:30:00.000Z', batchId, additionId: 'addition-seed-1', note: 'Seed batch consumption.', provenance: 'synthetic-demo' },
       { id: 'movement-seed-2', materialId: 'material-seed-2', materialLotId: 'lot-seed-2', movementType: 'consumption', quantity: 80, unit: 'g', occurredAt: '2026-10-10T09:30:00.000Z', batchId, additionId: 'addition-seed-2', note: 'Seed batch consumption.', provenance: 'synthetic-demo' }
     ],
-    calculations: [], tags: ['atmospheric', 'woody', 'fresh'], attachments: [], companionEntries: []
+    calculations: [], tags: ['atmospheric', 'woody', 'fresh'], attachments: [], companionEntries: [], equipment: [], verificationEvents: [], maintenanceEvents: [], measurements: []
   };
 }
 
-const STATE_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'calculations', 'tags', 'attachments', 'companionEntries', 'stockMovements'];
+const STATE_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'calculations', 'tags', 'attachments', 'companionEntries', 'stockMovements', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements'];
 
 export function normalizeState(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Atelier state must be a JSON object.');
@@ -232,6 +254,7 @@ export function normalizeState(input) {
 export function validateState(state) {
   const normalized = normalizeState(state);
   allIds(normalized.journalEntries, 'journal entry'); allIds(normalized.experiments, 'experiment'); allIds(normalized.revisions, 'revision'); allIds(normalized.batches, 'batch'); allIds(normalized.evaluations, 'evaluation'); allIds(normalized.stockMovements, 'stock movement');
+  const equipmentIds = allIds(normalized.equipment, 'equipment'); allIds(normalized.verificationEvents, 'verification event'); allIds(normalized.maintenanceEvents, 'maintenance event'); allIds(normalized.measurements, 'measurement');
   const materialIds = allIds(normalized.materials, 'material');
   const lotIds = new Set();
   for (const material of normalized.materials) {
@@ -284,6 +307,41 @@ export function validateState(state) {
     if (evaluation.provenance === 'measured' && !evaluation.isMeasured) throw new Error(`Evaluation ${evaluation.id} has measured provenance but is not marked measured.`);
     if (evaluation.provenance === 'ai-generated' && !Array.isArray(evaluation.aiSuggestions)) throw new Error(`AI-generated evaluation ${evaluation.id} must keep suggestions in an array.`);
     if (evaluation.scores && typeof evaluation.scores !== 'object') throw new Error(`Evaluation ${evaluation.id} scores must be an object.`);
+  }
+  for (const equipment of normalized.equipment) {
+    requireText(equipment.name, `Equipment ${equipment.id} name`);
+    if (!equipmentTypes.includes(equipment.equipmentType)) throw new Error(`Equipment ${equipment.id} has an invalid type.`);
+    if (!equipmentStatuses.includes(equipment.status)) throw new Error(`Equipment ${equipment.id} has an invalid status.`);
+    if (equipment.acquiredAt && Number.isNaN(Date.parse(equipment.acquiredAt))) throw new Error(`Equipment ${equipment.id} acquisition date is invalid.`);
+    if (equipment.lastVerifiedAt && Number.isNaN(Date.parse(equipment.lastVerifiedAt))) throw new Error(`Equipment ${equipment.id} last verified date is invalid.`);
+    if (equipment.resolution !== undefined) positiveFinite(equipment.resolution, `Equipment ${equipment.id} resolution`);
+    if (equipment.resolutionUnit !== undefined) measurementUnit(equipment.resolutionUnit, `Equipment ${equipment.id} resolution unit`);
+  }
+  for (const event of normalized.verificationEvents) {
+    if (!equipmentIds.has(event.equipmentId)) throw new Error(`Verification event ${event.id} references unknown equipment.`);
+    if (!verificationOutcomes.includes(event.outcome)) throw new Error(`Verification event ${event.id} has an invalid outcome.`);
+    timestamp(event.performedAt, `Verification event ${event.id} timestamp`);
+    if (event.nextDueAt && Number.isNaN(Date.parse(event.nextDueAt))) throw new Error(`Verification event ${event.id} due date is invalid.`);
+    if (event.referenceMeasurementId && !normalized.measurements.some(item => item.id === event.referenceMeasurementId)) throw new Error(`Verification event ${event.id} references an unknown measurement.`);
+  }
+  for (const event of normalized.maintenanceEvents) {
+    if (!equipmentIds.has(event.equipmentId)) throw new Error(`Maintenance event ${event.id} references unknown equipment.`);
+    if (!maintenanceEventTypes.includes(event.eventType)) throw new Error(`Maintenance event ${event.id} has an invalid type.`);
+    timestamp(event.occurredAt, `Maintenance event ${event.id} timestamp`);
+    if (event.completedAt && Number.isNaN(Date.parse(event.completedAt))) throw new Error(`Maintenance event ${event.id} completion date is invalid.`);
+  }
+  const journalIds = new Set(normalized.journalEntries.map(item => item.id));
+  for (const measurement of normalized.measurements) {
+    if (!equipmentIds.has(measurement.equipmentId)) throw new Error(`Measurement ${measurement.id} references unknown equipment.`);
+    requireText(measurement.quantityType, `Measurement ${measurement.id} quantity type`); measurementUnit(measurement.unit, `Measurement ${measurement.id} unit`);
+    if (typeof measurement.value !== 'number' || !Number.isFinite(measurement.value)) throw new Error(`Measurement ${measurement.id} value must be finite.`);
+    if (measurement.resolution !== undefined) positiveFinite(measurement.resolution, `Measurement ${measurement.id} resolution`);
+    timestamp(measurement.measuredAt, `Measurement ${measurement.id} timestamp`);
+    if (measurement.batchId && !batchIds.has(measurement.batchId)) throw new Error(`Measurement ${measurement.id} references unknown batch.`);
+    if (measurement.experimentId && !experimentIds.has(measurement.experimentId)) throw new Error(`Measurement ${measurement.id} references unknown experiment.`);
+    if (measurement.journalEntryId && !journalIds.has(measurement.journalEntryId)) throw new Error(`Measurement ${measurement.id} references unknown journal entry.`);
+    if (measurement.evaluationId && !normalized.evaluations.some(item => item.id === measurement.evaluationId)) throw new Error(`Measurement ${measurement.id} references unknown evaluation.`);
+    if (measurement.batchId && measurement.experimentId) { const batch = normalized.batches.find(item => item.id === measurement.batchId); if (batch.experimentId !== measurement.experimentId) throw new Error(`Measurement ${measurement.id} batch and experiment do not match.`); }
   }
   return normalized;
 }
@@ -360,6 +418,105 @@ export function inventorySummary(state, { today = new Date().toISOString().slice
     return { materialId: material.id, materialName: material.name, lot: { ...lot }, ...status, warnings };
   }));
   return { lots, unknownLots: lots.filter(item => !item.balanceKnown), lowStock: lots.filter(item => item.warnings.includes('Below low-stock threshold.')), dateWarnings: lots.filter(item => item.warnings.some(warning => warning.includes('date'))), recentMovements: normalized.stockMovements.slice().sort((a, b) => String(b.occurredAt).localeCompare(String(a.occurredAt))).slice(0, 12) };
+}
+
+function findEquipment(state, equipmentId) {
+  const equipment = state.equipment.find(item => item.id === equipmentId);
+  if (!equipment) throw new Error(`Equipment "${equipmentId}" was not found.`);
+  return equipment;
+}
+
+export function addEquipment(state, input) {
+  const normalized = normalizeState(state);
+  const equipment = {
+    id: input.id || id('equipment'), name: requireText(input.name, 'Equipment name'), equipmentType: input.equipmentType || 'other',
+    manufacturer: input.manufacturer || '', model: input.model || '', serialNumber: input.serialNumber || '', location: input.location || '',
+    status: input.status || 'available', acquiredAt: input.acquiredAt || undefined, resolution: optionalFinite(input.resolution, 'Equipment resolution'),
+    resolutionUnit: input.resolutionUnit ? measurementUnit(input.resolutionUnit, 'Equipment resolution unit') : undefined,
+    notes: input.notes || '', createdAt: input.createdAt || now(), updatedAt: now()
+  };
+  if (!equipmentTypes.includes(equipment.equipmentType)) throw new Error(`Unsupported equipment type "${equipment.equipmentType}".`);
+  if (!equipmentStatuses.includes(equipment.status)) throw new Error(`Unsupported equipment status "${equipment.status}".`);
+  timestamp(equipment.createdAt, 'Equipment createdAt');
+  if (normalized.equipment.some(item => item.id === equipment.id)) throw new Error(`Equipment ${equipment.id} already exists.`);
+  return validateState({ ...normalized, equipment: [equipment, ...normalized.equipment] });
+}
+
+export function updateEquipment(state, equipmentId, input) {
+  const normalized = normalizeState(state); findEquipment(normalized, equipmentId);
+  const nextEquipment = normalized.equipment.map(item => item.id === equipmentId ? {
+    ...item, ...input, id: item.id, createdAt: item.createdAt, updatedAt: now(),
+    name: requireText(input.name ?? item.name, 'Equipment name'),
+    equipmentType: input.equipmentType ?? item.equipmentType, status: input.status ?? item.status,
+    resolution: optionalFinite(input.resolution ?? item.resolution, 'Equipment resolution'),
+    resolutionUnit: input.resolutionUnit ?? item.resolutionUnit
+  } : item);
+  return validateState({ ...normalized, equipment: nextEquipment });
+}
+
+export function addVerificationEvent(state, equipmentId, input) {
+  const normalized = normalizeState(state); const equipment = findEquipment(normalized, equipmentId);
+  const event = {
+    id: input.id || id('verification'), equipmentId: equipment.id, performedAt: timestamp(input.performedAt, 'Verification date'),
+    method: input.method || '', outcome: input.outcome || 'pass', performedBy: input.performedBy || '', notes: input.notes || '',
+    nextDueAt: input.nextDueAt || undefined, referenceMeasurementId: input.referenceMeasurementId || undefined, createdAt: now()
+  };
+  if (normalized.verificationEvents.some(item => item.id === event.id)) throw new Error(`Verification event ${event.id} already exists.`);
+  const nextEquipment = normalized.equipment.map(item => item.id === equipment.id ? { ...item, lastVerifiedAt: event.performedAt, updatedAt: now() } : item);
+  return validateState({ ...normalized, equipment: nextEquipment, verificationEvents: [event, ...normalized.verificationEvents] });
+}
+
+export function addMaintenanceEvent(state, equipmentId, input) {
+  const normalized = normalizeState(state); const equipment = findEquipment(normalized, equipmentId);
+  const event = {
+    id: input.id || id('maintenance'), equipmentId: equipment.id, eventType: input.eventType || 'maintenance', occurredAt: timestamp(input.occurredAt, 'Maintenance date'),
+    completedAt: input.completedAt || undefined, performedBy: input.performedBy || '', notes: requireText(input.notes, 'Maintenance notes'), cost: optionalFinite(input.cost, 'Maintenance cost'), createdAt: now()
+  };
+  if (normalized.maintenanceEvents.some(item => item.id === event.id)) throw new Error(`Maintenance event ${event.id} already exists.`);
+  const status = input.statusAfter || (event.eventType === 'fault' ? 'out-of-service' : equipment.status);
+  const nextEquipment = normalized.equipment.map(item => item.id === equipment.id ? { ...item, status, updatedAt: now() } : item);
+  return validateState({ ...normalized, equipment: nextEquipment, maintenanceEvents: [event, ...normalized.maintenanceEvents] });
+}
+
+export function addMeasurement(state, equipmentId, input) {
+  const normalized = normalizeState(state); const equipment = findEquipment(normalized, equipmentId);
+  const measurement = {
+    id: input.id || id('measurement'), equipmentId: equipment.id, quantityType: requireText(input.quantityType, 'Measurement quantity type'),
+    value: Number(input.value), unit: measurementUnit(input.unit), measuredAt: timestamp(input.measuredAt, 'Measurement date'),
+    resolution: optionalFinite(input.resolution, 'Measurement resolution'), method: input.method || '', conditions: input.conditions || '', notes: input.notes || '',
+    batchId: input.batchId || undefined, experimentId: input.experimentId || undefined, journalEntryId: input.journalEntryId || undefined, evaluationId: input.evaluationId || undefined,
+    provenance: input.provenance || 'recorded', createdAt: now()
+  };
+  if (normalized.measurements.some(item => item.id === measurement.id)) throw new Error(`Measurement ${measurement.id} already exists.`);
+  return validateState({ ...normalized, measurements: [measurement, ...normalized.measurements] });
+}
+
+export function equipmentVerificationSummary(state, equipmentId, { asOf = new Date().toISOString() } = {}) {
+  const normalized = normalizeState(state); findEquipment(normalized, equipmentId);
+  const events = normalized.verificationEvents.filter(item => item.equipmentId === equipmentId).sort((a, b) => String(b.performedAt).localeCompare(String(a.performedAt)) || b.id.localeCompare(a.id));
+  const latest = events[0];
+  if (!latest) return { status: 'unknown', latest: null, events };
+  if (latest.outcome === 'fail') return { status: 'failed', latest, events };
+  if (latest.nextDueAt && Date.parse(latest.nextDueAt) < Date.parse(asOf)) return { status: 'overdue', latest, events };
+  return { status: latest.outcome === 'conditional' ? 'conditional' : 'verified', latest, events };
+}
+
+export function equipmentSummary(state, { asOf = new Date().toISOString() } = {}) {
+  const normalized = normalizeState(state);
+  return normalized.equipment.map(equipment => {
+    const verification = equipmentVerificationSummary(normalized, equipment.id, { asOf });
+    const maintenance = normalized.maintenanceEvents.filter(item => item.equipmentId === equipment.id).sort((a, b) => String(b.occurredAt).localeCompare(String(a.occurredAt)));
+    const measurements = normalized.measurements.filter(item => item.equipmentId === equipment.id).sort((a, b) => String(b.measuredAt).localeCompare(String(a.measuredAt)));
+    const warnings = [];
+    if (verification.status === 'unknown') warnings.push('Verification status unknown; no recorded verification evidence.');
+    if (verification.status === 'overdue') warnings.push('Verification is overdue.');
+    if (verification.status === 'failed') warnings.push('Latest verification failed.');
+    if (verification.status === 'conditional') warnings.push('Latest verification was conditional.');
+    if (equipment.status === 'under-maintenance') warnings.push('Equipment is under maintenance.');
+    if (equipment.status === 'out-of-service') warnings.push('Equipment is out of service.');
+    if (equipment.status === 'retired') warnings.push('Equipment is retired.');
+    return { equipment: { ...equipment }, verification, maintenance, measurements, warnings };
+  });
 }
 
 export function reconcileLot(state, materialLotId, { physicalQuantity, unit, reason, occurredAt, density } = {}) {
