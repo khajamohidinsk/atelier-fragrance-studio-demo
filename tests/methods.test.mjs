@@ -20,6 +20,16 @@ function draftInput() {
   };
 }
 
+function publishedExecution(overrides = {}) {
+  let state = createInitialState();
+  state = createMethod(state, { ...draftInput(), ...overrides });
+  const method = state.methods[0];
+  state = publishMethod(state, method.id);
+  const version = state.methodVersions.find(item => item.status === 'published');
+  state = startMethodExecution(state, { methodId: method.id, methodVersionId: version.id, experimentId: 'experiment-seed-1', startedAt: '2026-10-26T10:00:00.000Z' });
+  return { state, method, version, execution: state.methodExecutions[0] };
+}
+
 test('draft methods can be edited, published, and copied without mutating published history', () => {
   let state = createInitialState();
   state = createMethod(state, draftInput());
@@ -76,4 +86,52 @@ test('measurement criteria stay unknown when units cannot be compared', () => {
   const execution = state.methodExecutions[0];
   state = recordMethodMeasurement(state, execution.id, { methodMeasurementId: version.measurements[0].id, value: 22, unit: '°F', observedAt: '2026-10-26T10:00:00.000Z' });
   assert.equal(state.methodExecutions[0].measurements[0].criterionResult, 'not-evaluated');
+});
+
+test('missing one of two required measurements prevents an overall pass', () => {
+  const definitions = [{ name: 'Mass', unit: 'g', criterion: { kind: 'range', unit: 'g', min: 1, max: 2 } }, { name: 'Temperature', unit: '°C', criterion: { kind: 'range', unit: '°C', min: 20, max: 25 } }];
+  let { state, version, execution } = publishedExecution({ measurements: definitions });
+  state = recordMethodMeasurement(state, execution.id, { methodMeasurementId: version.measurements[0].id, value: 1.5, unit: 'g', observedAt: '2026-10-26T10:01:00.000Z' });
+  const report = methodExecutionReport(state, execution.id);
+  assert.equal(report.acceptance, 'not-evaluated');
+  assert.deepEqual(report.missingMeasurements, ['Temperature']);
+  assert.equal(report.measurementResults[0].criterionResult, 'pass');
+});
+
+test('a recorded measurement without a criterion remains not-evaluated', () => {
+  let { state, version, execution } = publishedExecution({ measurements: [{ name: 'Appearance score', unit: 'score' }] });
+  state = recordMethodMeasurement(state, execution.id, { methodMeasurementId: version.measurements[0].id, value: 3, unit: 'score', observedAt: '2026-10-26T10:01:00.000Z' });
+  const report = methodExecutionReport(state, execution.id);
+  assert.equal(report.measurementResults[0].criterionResult, 'not-evaluated');
+  assert.deepEqual(report.missingAcceptanceCriteria, ['Appearance score']);
+  assert.equal(report.acceptance, 'not-evaluated');
+});
+
+test('an incompatible-unit measurement prevents an overall pass', () => {
+  let { state, version, execution } = publishedExecution({ measurements: [{ name: 'Temperature', unit: '°C', criterion: { kind: 'range', unit: '°C', min: 20, max: 25 } }] });
+  state = recordMethodMeasurement(state, execution.id, { methodMeasurementId: version.measurements[0].id, value: 72, unit: '°F', observedAt: '2026-10-26T10:01:00.000Z' });
+  const report = methodExecutionReport(state, execution.id);
+  assert.equal(report.measurementResults[0].criterionResult, 'not-evaluated');
+  assert.deepEqual(report.unevaluatedMeasurements, ['Temperature']);
+  assert.equal(report.acceptance, 'not-evaluated');
+});
+
+test('all required measurements present and passing produces an overall pass', () => {
+  const definitions = [{ name: 'Mass', unit: 'g', criterion: { kind: 'range', unit: 'g', min: 1, max: 2 } }, { name: 'Temperature', unit: '°C', criterion: { kind: 'range', unit: '°C', min: 20, max: 25 } }];
+  let { state, version, execution } = publishedExecution({ measurements: definitions });
+  state = recordMethodMeasurement(state, execution.id, { methodMeasurementId: version.measurements[0].id, value: 1.5, unit: 'g', observedAt: '2026-10-26T10:01:00.000Z' });
+  state = recordMethodMeasurement(state, execution.id, { methodMeasurementId: version.measurements[1].id, value: 22, unit: '°C', observedAt: '2026-10-26T10:02:00.000Z' });
+  const report = methodExecutionReport(state, execution.id);
+  assert.equal(report.acceptance, 'pass');
+  assert.deepEqual(report.missingMeasurements, []);
+  assert.deepEqual(report.unevaluatedMeasurements, []);
+});
+
+test('a declared criterion failure produces an overall fail', () => {
+  let { state, version, execution } = publishedExecution({ measurements: [{ name: 'Mass', unit: 'g', criterion: { kind: 'range', unit: 'g', min: 1, max: 2 } }] });
+  state = recordMethodMeasurement(state, execution.id, { methodMeasurementId: version.measurements[0].id, value: 3, unit: 'g', observedAt: '2026-10-26T10:01:00.000Z' });
+  const report = methodExecutionReport(state, execution.id);
+  assert.equal(report.measurementResults[0].criterionResult, 'fail');
+  assert.deepEqual(report.failedMeasurements, ['Mass']);
+  assert.equal(report.acceptance, 'fail');
 });
