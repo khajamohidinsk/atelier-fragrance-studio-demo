@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BACKUP_FORMAT, createBackup, mergeBackup, parseBackup, previewBackupMerge, previewBackupReplace, serializeBackup } from '../src/domain/backup.mjs';
 import { addBatch, addExperiment, addRevision, createInitialState, recordSensoryEvaluation } from '../src/domain/store.mjs';
+import { createMethod, publishMethod, startMethodExecution } from '../src/domain/methods.mjs';
 
 test('backup export and import round-trip preserves collections and IDs', () => {
   const state = createInitialState();
   const payload = parseBackup(serializeBackup(state, { exportedAt: '2026-10-22T00:00:00.000Z' }));
   assert.equal(payload.format, BACKUP_FORMAT);
-  assert.equal(payload.schemaVersion, 2);
+  assert.equal(payload.schemaVersion, 3);
   assert.deepEqual(payload.state.experiments.map(item => item.id), state.experiments.map(item => item.id));
   assert.deepEqual(payload.state.stockMovements.map(item => item.id), state.stockMovements.map(item => item.id));
 });
@@ -119,6 +120,19 @@ test('full populated backup round-trip preserves relationships, units, timestamp
   assert.equal(restored.stockMovements.find(item => item.id === 'movement-seed-1').batchId, restored.batches[0].id);
 });
 
+test('backup round-trip preserves method versions and exact execution links', () => {
+  let state = createInitialState();
+  state = createMethod(state, { title: 'Backup SOP', purpose: 'Preserve method history', steps: [{ type: 'instruction', title: 'Observe', instruction: 'Record what happened.' }], measurements: [], observations: [], evidenceRequirements: [] });
+  const method = state.methods[0];
+  state = publishMethod(state, method.id);
+  const version = state.methodVersions.find(item => item.status === 'published');
+  state = startMethodExecution(state, { methodId: method.id, methodVersionId: version.id, experimentId: 'experiment-seed-1', startedAt: '2026-10-26T10:00:00.000Z' });
+  const restored = parseBackup(serializeBackup(state)).state;
+  assert.deepEqual(restored.methods, state.methods);
+  assert.deepEqual(restored.methodVersions, state.methodVersions);
+  assert.equal(JSON.stringify(restored.methodExecutions), JSON.stringify(state.methodExecutions));
+});
+
 test('supported schema version 1 backup migrates explicitly to the current state schema', () => {
   const legacy = createInitialState();
   legacy.version = 1;
@@ -126,7 +140,7 @@ test('supported schema version 1 backup migrates explicitly to the current state
   legacy.batches = legacy.batches.map(batch => ({ ...batch, actualAdditions: batch.actualAdditions.map(({ stockMovementId, ...addition }) => addition) }));
   const payload = parseBackup(JSON.stringify({ format: BACKUP_FORMAT, backupVersion: 1, schemaVersion: 1, application: 'Atelier Scent Lab', exportedAt: '2026-10-25T00:00:00.000Z', state: legacy }));
   assert.equal(payload.migratedFromSchemaVersion, 1);
-  assert.equal(payload.state.version, 2);
+  assert.equal(payload.state.version, 3);
   assert.ok(payload.state.stockMovements.some(item => item.provenance === 'migration'));
 });
 

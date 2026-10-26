@@ -1,8 +1,9 @@
 import { calculateBatchTotals, convertQuantity, validateUnit } from './calculations.mjs';
+import { validateMethodsState } from './methods.mjs';
 
 export const STORAGE_KEY = 'atelier-lab-state-v1';
 export const LEGACY_COMPANION_STORAGE_KEY = 'atelier.scent-companion.v1';
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 export const statuses = ['Draft', 'Mixed', 'Maturing', 'Evaluated', 'Archived'];
 export const movementTypes = ['opening', 'receipt', 'return', 'adjustment', 'consumption', 'wastage', 'correction', 'reversal'];
 export const equipmentTypes = ['balance', 'pipette', 'thermometer', 'other'];
@@ -231,11 +232,11 @@ export function createInitialState() {
       { id: 'movement-seed-1', materialId, materialLotId: 'lot-seed-1', movementType: 'consumption', quantity: 20, unit: 'g', occurredAt: '2026-10-10T09:30:00.000Z', batchId, additionId: 'addition-seed-1', note: 'Seed batch consumption.', provenance: 'synthetic-demo' },
       { id: 'movement-seed-2', materialId: 'material-seed-2', materialLotId: 'lot-seed-2', movementType: 'consumption', quantity: 80, unit: 'g', occurredAt: '2026-10-10T09:30:00.000Z', batchId, additionId: 'addition-seed-2', note: 'Seed batch consumption.', provenance: 'synthetic-demo' }
     ],
-    calculations: [], tags: ['atmospheric', 'woody', 'fresh'], attachments: [], companionEntries: [], equipment: [], verificationEvents: [], maintenanceEvents: [], measurements: [], purchases: [], purchaseLineItems: [], blindSessions: [], blindSamples: [], maturationPlans: [], maturationCheckpoints: [], maturationObservations: [], experimentDesigns: [], experimentDesignFactors: [], experimentDesignConditions: [], experimentDesignResponses: [], experimentDesignRuns: []
+    calculations: [], tags: ['atmospheric', 'woody', 'fresh'], attachments: [], companionEntries: [], equipment: [], verificationEvents: [], maintenanceEvents: [], measurements: [], purchases: [], purchaseLineItems: [], blindSessions: [], blindSamples: [], maturationPlans: [], maturationCheckpoints: [], maturationObservations: [], experimentDesigns: [], experimentDesignFactors: [], experimentDesignConditions: [], experimentDesignResponses: [], experimentDesignRuns: [], methods: [], methodVersions: [], methodExecutions: []
   };
 }
 
-const STATE_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'calculations', 'tags', 'attachments', 'companionEntries', 'stockMovements', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements', 'purchases', 'purchaseLineItems', 'blindSessions', 'blindSamples', 'maturationPlans', 'maturationCheckpoints', 'maturationObservations', 'experimentDesigns', 'experimentDesignFactors', 'experimentDesignConditions', 'experimentDesignResponses', 'experimentDesignRuns'];
+const STATE_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'calculations', 'tags', 'attachments', 'companionEntries', 'stockMovements', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements', 'purchases', 'purchaseLineItems', 'blindSessions', 'blindSamples', 'maturationPlans', 'maturationCheckpoints', 'maturationObservations', 'experimentDesigns', 'experimentDesignFactors', 'experimentDesignConditions', 'experimentDesignResponses', 'experimentDesignRuns', 'methods', 'methodVersions', 'methodExecutions'];
 
 export function normalizeState(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Atelier state must be a JSON object.');
@@ -327,6 +328,7 @@ export function validateState(state) {
   }
   for (const evaluation of normalized.evaluations) { if (!experimentIds.has(evaluation.experimentId)) throw new Error(`Evaluation ${evaluation.id} references an unknown experiment.`); if (evaluation.batchId) { const batch = normalized.batches.find(item => item.id === evaluation.batchId); if (!batch || batch.experimentId !== evaluation.experimentId) throw new Error(`Evaluation ${evaluation.id} references an invalid batch.`); if (evaluation.revisionId && evaluation.revisionId !== batch.formulaRevisionId) throw new Error(`Evaluation ${evaluation.id} revision does not match its batch.`); } if (evaluation.revisionId && (!revisionIds.has(evaluation.revisionId) || normalized.revisions.find(item => item.id === evaluation.revisionId).experimentId !== evaluation.experimentId)) throw new Error(`Evaluation ${evaluation.id} references an invalid revision.`); }
   for (const movement of normalized.stockMovements) { normalizeMovement(normalized, movement, { allowGeneratedId: true, enforceOpening: false }); if (movement.batchId && !batchIds.has(movement.batchId)) throw new Error(`Movement ${movement.id} references an unknown batch.`); if (movement.movementType === 'consumption' && (!movement.batchId || !movement.additionId)) throw new Error(`Consumption movement ${movement.id} must reference a batch and addition.`); if (movement.movementType === 'consumption') { const batch = normalized.batches.find(item => item.id === movement.batchId); const addition = (batch?.actualAdditions || []).find(item => item.id === movement.additionId); if (!addition) throw new Error(`Consumption movement ${movement.id} references an unknown batch addition.`); if (addition.stockMovementId !== movement.id) throw new Error(`Consumption movement ${movement.id} and addition ${addition.id} do not reference each other.`); if (movement.quantity !== addition.amount || !unitsInterchangeable(movement.unit, addition.unit, movement.density ?? lotOf(normalized, addition.materialLotId).density)) throw new Error(`Consumption movement ${movement.id} and addition ${addition.id} disagree on quantity or unit.`); } }
+  validateMethodsState(normalized);
   for (const evaluation of normalized.evaluations) {
     if (!evaluation.id || !evaluation.evaluatedAt || Number.isNaN(Date.parse(evaluation.evaluatedAt))) throw new Error(`Evaluation ${evaluation.id || 'unknown'} has an invalid evaluation timestamp.`);
     if (evaluation.elapsedMinutes !== undefined) nonNegativeFinite(evaluation.elapsedMinutes, `Evaluation ${evaluation.id} elapsed time`);
