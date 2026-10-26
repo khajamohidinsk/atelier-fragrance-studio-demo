@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addExperiment, createInitialState } from '../src/domain/store.mjs';
-import { completeMethodExecution, createMethod, methodExecutionReport, publishMethod, recordMethodCondition, recordMethodDeviation, recordMethodEvidence, recordMethodMeasurement, recordMethodObservation, recordMethodExecutionStep, retireMethod, startMethodExecution, updateMethodDraft } from '../src/domain/methods.mjs';
+import { clonePublishedMethodToDraft, completeMethodExecution, createMethod, methodExecutionReport, publishMethod, recordMethodCondition, recordMethodDeviation, recordMethodEvidence, recordMethodMeasurement, recordMethodObservation, recordMethodExecutionStep, retireMethod, startMethodExecution, updateMethodDraft } from '../src/domain/methods.mjs';
 
 function draftInput() {
   return {
@@ -46,6 +46,44 @@ test('draft methods can be edited, published, and copied without mutating publis
   assert.equal(JSON.stringify(state.methodVersions.find(item => item.id === published.id)), before);
   state = retireMethod(state, method.id);
   assert.throws(() => startMethodExecution(state, { methodId: method.id, methodVersionId: published.id, experimentId: 'experiment-seed-1' }), /Retired/);
+});
+
+test('retirement is terminal for draft editing, publishing, cloning, and execution without changing history', () => {
+  let state = createInitialState();
+  state = createMethod(state, draftInput());
+  const method = state.methods[0];
+  state = publishMethod(state, method.id);
+  const version = state.methodVersions.find(item => item.status === 'published');
+  state = updateMethodDraft(state, method.id, { purpose: 'Second published revision.' });
+  state = publishMethod(state, method.id);
+  const currentVersion = state.methodVersions.find(item => item.status === 'published' && item.version === 2);
+  state = startMethodExecution(state, { methodId: method.id, methodVersionId: version.id, experimentId: 'experiment-seed-1', startedAt: '2026-10-26T10:00:00.000Z' });
+  state = retireMethod(state, method.id);
+  const before = JSON.stringify(state);
+  for (const operation of [
+    () => updateMethodDraft(state, method.id, { purpose: 'Must not change.' }),
+    () => publishMethod(state, method.id),
+    () => clonePublishedMethodToDraft(state, method.id),
+    () => startMethodExecution(state, { methodId: method.id, methodVersionId: version.id, experimentId: 'experiment-seed-1' })
+  ]) assert.throws(operation, /Retired/);
+  assert.equal(JSON.stringify(state), before);
+  assert.equal(state.methods[0].status, 'retired');
+  assert.equal(currentVersion.version, 2);
+  assert.equal(state.methodVersions.filter(item => item.status === 'published').length, 2);
+  assert.equal(state.methodExecutions.length, 1);
+  assert.equal(methodExecutionReport(state, state.methodExecutions[0].id).version.id, version.id);
+});
+
+test('zero-valued compatible converted measurements are evaluated instead of becoming unevaluable', () => {
+  let { state, version, execution } = publishedExecution({ measurements: [{ name: 'Mass', unit: 'g', criterion: { kind: 'range', unit: 'kg', min: 0, max: 0 } }] });
+  state = recordMethodMeasurement(state, execution.id, { methodMeasurementId: version.measurements[0].id, value: 0, unit: 'mg', observedAt: '2026-10-26T10:01:00.000Z' });
+  assert.equal(state.methodExecutions[0].measurements[0].criterionResult, 'pass');
+  assert.equal(methodExecutionReport(state, execution.id).acceptance, 'pass');
+
+  ({ state, version, execution } = publishedExecution({ measurements: [{ name: 'Mass', unit: 'g', criterion: { kind: 'at-least', unit: 'kg', value: 0.001 } }] }));
+  state = recordMethodMeasurement(state, execution.id, { methodMeasurementId: version.measurements[0].id, value: 0, unit: 'mg', observedAt: '2026-10-26T10:01:00.000Z' });
+  assert.equal(state.methodExecutions[0].measurements[0].criterionResult, 'fail');
+  assert.equal(methodExecutionReport(state, execution.id).acceptance, 'fail');
 });
 
 test('execution preserves selected published version and distinguishes measured acceptance from missing evidence', () => {

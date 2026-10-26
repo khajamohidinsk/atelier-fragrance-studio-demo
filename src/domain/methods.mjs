@@ -297,6 +297,7 @@ export function createMethod(state, input) {
 
 export function updateMethodDraft(state, methodId, input) {
   const method = methodRecord(state, methodId); const draft = methodVersion(state, method.draftVersionId);
+  if (method.status === 'retired') throw new Error('Retired methods cannot be edited.');
   if (draft.status !== 'draft') throw new Error('Only a draft method can be edited.');
   const nextDraft = { ...draft, ...normalizeDefinition({ ...draft, ...input }), updatedAt: now() };
   const nextMethod = { ...method, title: nextDraft.title, purpose: nextDraft.purpose, scope: nextDraft.scope, tags: nextDraft.tags, author: text(input.author, 'Method author', { optional: true }) || method.author, updatedAt: now() };
@@ -304,7 +305,7 @@ export function updateMethodDraft(state, methodId, input) {
 }
 
 export function publishMethod(state, methodId) {
-  const method = methodRecord(state, methodId); const draft = methodVersion(state, method.draftVersionId); if (draft.status !== 'draft') throw new Error('Only a draft method can be published.');
+  const method = methodRecord(state, methodId); if (method.status === 'retired') throw new Error('Retired methods cannot be published.'); const draft = methodVersion(state, method.draftVersionId); if (draft.status !== 'draft') throw new Error('Only a draft method can be published.');
   const publishedNumber = Math.max(0, ...state.methodVersions.filter(item => item.methodId === methodId && item.status === 'published').map(item => item.version)) + 1;
   const published = { ...clone(draft), id: id('method-version'), version: publishedNumber, status: 'published', publishedAt: now(), createdAt: now() };
   const nextDraft = { ...clone(published), id: id('method-draft'), version: 0, status: 'draft', createdAt: now() };
@@ -399,7 +400,7 @@ export function methodExecutionReport(state, executionId) {
 }
 
 export function clonePublishedMethodToDraft(state, methodId) {
-  const method = methodRecord(state, methodId); if (!method.currentVersionId) throw new Error('The method has no published version to copy.');
+  const method = methodRecord(state, methodId); if (method.status === 'retired') throw new Error('Retired methods cannot be cloned.'); if (!method.currentVersionId) throw new Error('The method has no published version to copy.');
   const published = methodVersion(state, method.currentVersionId); const draft = { ...clone(published), id: id('method-draft'), version: 0, status: 'draft', publishedAt: undefined, createdAt: now() };
   return validateMethodsState({ ...state, methods: state.methods.map(item => item.id === methodId ? { ...item, draftVersionId: draft.id, status: 'draft', updatedAt: now() } : item), methodVersions: [draft, ...state.methodVersions] });
 }

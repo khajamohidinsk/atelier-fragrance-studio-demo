@@ -7,6 +7,7 @@ Atelier stores reusable measurement methods and standard operating procedures in
 - A method starts as a draft with structured steps, required materials/equipment, measurement definitions, conditions, observations, and evidence requirements.
 - Publishing creates an immutable, numbered `methodVersions` record. The method keeps a fresh editable draft so later changes cannot mutate a version already used by an execution.
 - Retiring a method keeps published versions and execution links readable.
+- Retirement is terminal for this workflow: retired methods cannot be edited, published, cloned into a new draft, or used to start an execution. Published history and existing execution reports remain readable.
 - Each execution stores `methodVersionId`; it never resolves through the method's latest version after starting.
 
 ## Measurement semantics
@@ -15,6 +16,7 @@ Atelier stores reusable measurement methods and standard operating procedures in
 - Measurement definitions are required by default; callers may explicitly mark a definition optional with `required: false`.
 - Observed values retain the entered unit, timestamp, equipment reference, conditions, notes, and evidence references.
 - Pass/fail is calculated only when an explicit criterion exists and units are compatible. Unsupported or ambiguous conversions remain `not-evaluated`.
+- Compatible unit conversion accepts a finite zero measurement within a supported mass or volume dimension; negative, non-finite, unsupported-unit, and invalid-density inputs remain invalid.
 - An overall execution acceptance is `pass` only when every required measurement is present, every required measurement declares an explicit criterion, and every required result evaluates to `pass`. Missing measurements, missing criteria, incompatible units, and other unevaluable results keep acceptance at `not-evaluated`; any evaluated failed criterion makes acceptance `fail`.
 - Execution status (`in-progress`, `completed`, or `interrupted`), missing requirements, individual measurement results, and overall acceptance remain separate report fields. Completing an execution does not turn incomplete or unevaluable measurements into a pass.
 - Subjective observations, measured values, and deviations are separate execution records.

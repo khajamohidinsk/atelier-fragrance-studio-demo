@@ -431,6 +431,20 @@ document.addEventListener('submit', event => {
 document.addEventListener('click', event => { const action = event.target.closest('[data-action="open-batch"]'); if (action) setTimeout(() => appendBatchCosting(action.dataset.id), 0); });
 document.addEventListener('submit', event => { const form = event.target; if (form.id !== 'batch-form') return; event.preventDefault(); event.stopImmediatePropagation(); try { if (!window.confirm('Append this physical batch and deduct stock from each selected lot?')) return; const actualAdditions = [...form.querySelectorAll('.batch-addition-row')].map(row => { const values = rowValues(row); return { id: values.id || `addition-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`, materialId: values.materialId, materialLotId: values.materialLotId, amount: Number(values.amount), unit: values.unit, purchaseLineItemId: values.purchaseLineItemId || undefined, concentration: values.concentration === '' ? 100 : Number(values.concentration), addedAt: values.addedAt ? new Date(values.addedAt).toISOString() : new Date().toISOString() }; }); const next = addBatch(state, form.dataset.experimentId, { formulaRevisionId: form.elements.formulaRevisionId.value, batchCode: form.elements.batchCode.value, plannedAmount: Number(form.elements.plannedAmount.value), unit: form.elements.unit.value, mixingDate: new Date(form.elements.mixingDate.value).toISOString(), procedureNotes: form.elements.procedureNotes.value, observations: form.elements.observations.value, deviations: form.elements.deviations.value, actualAdditions }); if (persist(next)) { closeDialog('record-dialog'); toast('Physical batch appended and stock deducted'); showExperimentDetail(form.dataset.experimentId); } } catch (error) { toast(error.message); } }, true);
 
+function enforceRetiredMethodUI() {
+  document.querySelectorAll('.method-card[data-method-id]').forEach(card => {
+    const method = state.methods.find(item => item.id === card.dataset.methodId);
+    if (method?.status === 'retired') card.querySelectorAll('[data-action="new-method-execution"], [data-action="new-method-execution-version"]').forEach(action => action.remove());
+  });
+  const detail = $('#record-dialog-content');
+  const methodAction = detail?.querySelector('[data-action="edit-method"], [data-action="publish-method"], [data-action="clone-method"], [data-action="new-method-execution"], [data-action="new-method-execution-version"]');
+  const method = methodAction ? state.methods.find(item => item.id === methodAction.dataset.id) : null;
+  if (method?.status === 'retired') detail.querySelectorAll('[data-action="edit-method"], [data-action="publish-method"], [data-action="clone-method"], [data-action="new-method-execution"], [data-action="new-method-execution-version"]').forEach(action => action.remove());
+}
+
+const retiredMethodObserver = new MutationObserver(enforceRetiredMethodUI);
+retiredMethodObserver.observe($('#method-list'), { childList: true, subtree: true });
+retiredMethodObserver.observe($('#record-dialog-content'), { childList: true, subtree: true });
 companionApi = initScentCompanion({ getState: () => state, persist, toast, materialNames: ['Bergamot', 'Cedarwood', 'Iris', 'Rose', 'Sandalwood', 'Vetiver', 'Musk'] });
 renderAll();
 if (loadError) toast(loadError);

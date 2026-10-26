@@ -63,7 +63,7 @@ test('method library publishes immutable versions and executes the selected vers
   await page.getByRole('button', { name: /Mark execution completed/ }).click();
   await expect(page.locator('#record-dialog-content')).toContainText('completed');
 
-  await page.getByRole('button', { name: /Close report/ }).click();
+  await page.locator('#record-dialog > .dialog-close').click();
   await page.reload();
   await page.getByRole('button', { name: /Methods & SOPs/ }).click();
   await page.locator('[data-method-id]').getByRole('button', { name: /Open method/ }).click();
@@ -90,4 +90,29 @@ test('method library remains reachable at phone width and exposes keyboard label
   await expect(page.locator('#screen-methods')).toBeVisible();
   await expect(page.getByRole('button', { name: /New method/ })).toBeVisible();
   await expect(page.locator('#method-search')).toHaveAttribute('placeholder', /Search methods/);
+});
+
+test('retired methods hide lifecycle actions while preserving versions and execution reports', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: /Methods & SOPs/ }).click();
+  await page.getByRole('button', { name: /New method/ }).click();
+  await page.locator('#method-form input[name="title"]').fill('Retirement browser SOP');
+  await page.locator('#method-form textarea[name="purpose"]').fill('Verify terminal retirement behavior.');
+  await page.locator('#method-form textarea[name="steps"]').fill('step-1 | instruction | Observe | Record the run. | required');
+  await page.locator('#method-form button[type="submit"]').click();
+  await page.getByRole('button', { name: /Publish draft/ }).click();
+  await page.getByRole('button', { name: /Execute latest version/ }).click();
+  await page.locator('#method-execution-form select[name="experimentId"]').selectOption({ label: 'EXP-001 · Mineral garden accord' });
+  await page.locator('#method-execution-form button[type="submit"]').click();
+  await page.locator('#record-dialog > .dialog-close').click();
+  await page.locator('[data-method-id]').getByRole('button', { name: /Open method/ }).click();
+  await page.getByRole('button', { name: /Retire method/ }).click();
+
+  await expect(page.locator('[data-method-id]').getByRole('button', { name: /Execute v/ })).toHaveCount(0);
+  await expect(page.locator('#record-dialog-content')).toContainText('Version 1');
+  await expect(page.locator('#record-dialog-content')).toContainText('retired');
+  await expect(page.locator('#record-dialog-content').getByRole('button', { name: /Edit draft|Publish draft|Create new draft from latest|Execute latest version|Execute version/ })).toHaveCount(0);
+  await page.getByRole('button', { name: /Open report/ }).click();
+  await expect(page.locator('#record-dialog-content')).toContainText('EXECUTION REPORT');
+  await expect(page.locator('#record-dialog-content')).toContainText('version 1');
 });
