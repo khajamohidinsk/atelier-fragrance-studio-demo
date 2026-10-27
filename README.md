@@ -13,16 +13,19 @@ The core workflow is functional in the browser:
 5. Record actual batch additions, lot references, and procedure notes.
 6. Add sensory evaluations with intervals, conditions, descriptors, and optional measured-result notes.
 7. Compare two formula revisions side by side.
-8. Export the complete local record as a JSON backup.
-9. Open Scent Companion for editable sensory notes, browser dictation, optional vocabulary guidance, and spoken formulation briefings.
+8. Inspect lot-level stock balances and movements, including batch-linked consumption.
+9. Export and validate a versioned JSON backup, then merge or replace local state through an explicit import workflow.
+10. Compare revisions using deterministic ingredient/evaluation evidence and provenance warnings.
+11. Open Scent Companion for editable sensory notes, browser dictation, optional vocabulary guidance, and spoken formulation briefings.
 
 ## Features
 
 - Journal records for opening, heart, dry-down, overall impression, purpose, hypothesis, descriptors, intensity, longevity, projection, evaluation time, medium, environment, personal notes, conclusions, and next steps.
 - Experiment workflow statuses: Draft, Mixed, Maturing, Evaluated, and Archived. These are workflow labels, not scientific validation claims.
 - Immutable formula revision history with `supersedesRevisionId` links.
-- Material and lot ledger with optional supplier, product/reference, acquisition date, purity, stock concentration, solvent, storage notes, and safety-reference fields.
-- Batch traceability: every batch references an experiment and exact formula revision, while actual additions retain material and lot IDs.
+- Material and lot ledger with optional supplier, product/reference, acquisition date, purity, stock concentration, density, storage notes, safety-reference, expiry, retest, and low-stock threshold fields. Multiple physical lots for one material remain separate.
+- Append-only stock movements: opening, receipt, confirmed return, verified adjustment, consumption, wastage/disposal, correction, and reversal. Balances are replayed from movements; they are not independently editable.
+- Batch traceability: every batch references an experiment and exact formula revision, while actual additions retain material, exact lot, and exactly one linked consumption movement.
 - Sensory timeline records for multiple intervals after mixing and a comparison view that keeps subjective impressions separate from measured-result text.
 - Keyboard-friendly dialogs, readable tables, responsive mobile layouts, empty states, sample-data warnings, and local JSON export.
 
@@ -37,14 +40,51 @@ app.js                      UI orchestration and browser event handlers
 src/domain/types.js         JSDoc domain models (editor/type tooling friendly)
 src/domain/calculations.mjs Pure calculation and unit-validation logic
 src/domain/store.mjs        Normalized state, relationship helpers, persistence
+src/domain/persistence.mjs  Injectable browser-local persistence adapter
+src/domain/backup.mjs       Versioned export, validation, merge, and restore
+src/domain/comparison.mjs   Pure deterministic revision comparison
+src/domain/summaries.mjs    Provenance-aware experiment summaries
 src/ui/companion.mjs        Scent Companion editor, speech APIs, AI review flow
 src/ui/companion.css        Namespaced Companion styling
 tests/calculations.test.mjs Calculation unit tests
-tests/store.test.mjs        Persistence-model and traceability tests
+tests/store.test.mjs        Store, stock-ledger, and relationship tests
+tests/backup.test.mjs       Backup validation, merge, and round-trip tests
+tests/persistence.test.mjs  Adapter and legacy migration tests
+tests/comparison.test.mjs   Deterministic comparison and summary tests
 scripts/                    Lint, type-model, and static build checks
 ```
 
-The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, Companion observations, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, Companion observations, stock movements, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+
+## Stock ledger and history integrity
+
+Each lot belongs to one material and has a stock unit when known. A movement quantity is always positive; movement type and direction determine whether it increases or decreases the replayed balance. Mass and volume remain separate unless a valid positive density in g/mL is supplied. Consumption is rejected when it would make the lot balance negative. Replayed balances are rounded to a documented `1e-9` base-unit precision after each movement to prevent accumulated floating-point drift; the original quantity, unit, density, and timestamp remain on every movement for auditability.
+
+A lot's opening balance is either **established** or **unreconciled**. It is established when the lot records a received amount or carries an explicit `opening` movement. Otherwise the lot is unreconciled: its replayed balance is a floor derived from recorded consumption, not a measured stock figure, and `stockStatus` reports `balanceKnown: false` so callers never present it as an on-hand quantity. Further consumption on an unreconciled lot is refused, because without an opening there is no way to distinguish a valid draw from an overdraft. Receipts, corrections and reversals stay permitted. `reconcileLotOpening` records a user-supplied opening for such a lot and is the only sanctioned path out of the unreconciled state; the amount always comes from the user's measurement and is never derived from consumption history. A lot with an established opening is reported as reconciled with a real balance.
+
+Batch creation validates the experiment, canonical formula revision, material/lot ownership, units, concentrations, and exact addition identifiers before constructing the next state. It appends one `consumption` movement per actual addition and stores that movement ID on the addition. A repeated addition ID or movement ID is rejected. Corrections are compensating movements; historical movements are never rewritten. Each addition and its movement must also agree on the exact quantity and on interchangeable units, so a re-expressed or altered record is rejected rather than silently replaying a different balance.
+
+Existing version-1 local state is migrated by replaying the consumption that its batch additions document, and the migration is recorded with its provenance. The opening balance is *not* inferred from that consumption, because doing so would fabricate inventory. A lot that already records a received amount gets an explicit `opening` movement for exactly that amount and is left established. A lot without one keeps its historical consumption, is marked unreconciled, and must be reconciled by hand before further consumption is allowed.
+
+Formula revisions are append-only. A new revision must belong to the target experiment and supersede that experiment's current latest revision. Batches retain the exact revision used. Evaluations validate experiment, batch, and revision relationships and derive a missing revision from the selected batch when possible. Journal-to-experiment reverse links are maintained by the domain operation rather than only by the UI.
+
+### Inventory operations
+
+Open **Inventory & materials** from the sidebar to add a material, add separate lots, append receipts/returns/verified adjustments/disposals/corrections, and inspect chronological lot history. Adjustment, correction, and disposal records require a reason; adjustments also require explicit verification. A return requires an explicit confirmation checkbox. Historical movements are never edited. Use **Reconcile** on a lot to compare recorded on-hand with a physical count; the variance is shown before a compensating adjustment is appended. Lots without a trustworthy opening remain visibly unknown and can be given a measured opening through the same workflow.
+
+The inventory dashboard reports known lots, lots requiring reconciliation, low-stock thresholds, expiry/retest reminders, recent movements, missing lot codes, and linked batch usage. These are operational reminders only and do not prove chemical safety, identity, purity, or usability.
+
+## Versioned backup and persistence adapter
+
+Backups use the envelope `{format: "atelier-scent-lab-backup", backupVersion: 1, schemaVersion: 2, application, exportedAt, state}`. Import validates JSON, format/version, record IDs, units, quantities, duplicate movements, and relationships before applying anything. The import dialog previews new records and conflicting IDs before a merge. Merge adds only missing IDs and reports conflicting IDs without overwriting current records. Replace explicitly replaces the local state after validation. Re-importing the same file is idempotent, and a failed persistence write is shown as an error rather than reported as success. The current version-1 local state and legacy `atelier.scent-companion.v1` data are migrated without deleting the source until the new state has been saved successfully.
+
+`src/domain/persistence.mjs` defines the small adapter seam used by the app: `load()`, `save(state)`, `subscribe(listener)`, and `schemaVersion`. The included adapter is synchronous browser `localStorage`; tests use an in-memory adapter. Storage, serialization, malformed-state, quota, and migration failures are surfaced instead of being reported as successful saves or silently reset.
+
+The browser-local boundary still means no cloud backup, cross-device synchronization, authentication, or multi-user access. The adapter is replaceable later; no remote persistence implementation is included here.
+
+## Recorded-data analysis and provenance
+
+`compareRevisions()` compares stable ingredient keys, quantities, units, concentrations, roles, lots, revision-linked batches, and revision-linked evaluations. It reports incompatible or differing evaluation conditions instead of implying a controlled comparison. `summarizeExperiment()` keeps recorded, measured, subjective, synthetic/demo, and AI-generated categories distinct and emits warnings when evidence is missing or provenance is incomplete. No causal conclusion or missing measurement is invented.
 
 ## Scent Companion
 

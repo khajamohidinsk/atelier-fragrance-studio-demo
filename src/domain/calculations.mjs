@@ -67,7 +67,7 @@ export function calculateDilution({ stockConcentration, targetConcentration, fin
   if (stock <= 0) throw new Error('Stock concentration must be greater than zero.');
   if (target > stock) throw new Error('Target concentration cannot exceed stock concentration.');
   const stockAmount = finalAmount * target / stock;
-  return Object.freeze({ stockAmount, diluentAmount: finalAmount - stockAmount, finalAmount, unit, targetConcentration: target });
+  return Object.freeze({ stockAmount, diluentAmount: finalAmount - stockAmount, finalAmount, unit, stockConcentration: stock, targetConcentration: target });
 }
 
 /** Calculate the concentration of a mixture from concentration/amount additions. */
@@ -100,6 +100,7 @@ export function calculateBatchTotals(additions, { unit } = {}) {
   if (!targetUnit) throw new Error('A unit is required for each batch addition.');
   const targetKind = validateUnit(targetUnit).kind;
   const totals = new Map();
+  const lotTotals = new Map();
   let totalAmount = 0;
   let totalActiveAmount = 0;
   for (const [index, addition] of additions.entries()) {
@@ -111,8 +112,9 @@ export function calculateBatchTotals(additions, { unit } = {}) {
     totalAmount += normalized;
     totalActiveAmount += normalized * concentration(addition.concentration ?? 100, `Batch addition ${index + 1} concentration`) / 100;
     totals.set(addition.materialId, (totals.get(addition.materialId) ?? 0) + normalized);
+    if (addition.materialLotId) lotTotals.set(addition.materialLotId, (lotTotals.get(addition.materialLotId) ?? 0) + normalized);
   }
-  return Object.freeze({ totalAmount, totalActiveAmount, unit: targetUnit, byMaterial: Object.fromEntries(totals) });
+  return Object.freeze({ totalAmount, totalActiveAmount, unit: targetUnit, byMaterial: Object.fromEntries(totals), byLot: Object.fromEntries(lotTotals) });
 }
 
 export { units };
