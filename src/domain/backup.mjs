@@ -2,7 +2,7 @@ import { CURRENT_SCHEMA_VERSION, LEGACY_COMPANION_STORAGE_KEY, normalizeState, v
 
 export const BACKUP_FORMAT = 'atelier-scent-lab-backup';
 export const BACKUP_VERSION = 1;
-export const BACKUP_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'stockMovements', 'companionEntries', 'calculations', 'attachments', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements', 'purchases', 'purchaseLineItems', 'blindSessions', 'blindSamples', 'maturationPlans', 'maturationCheckpoints', 'maturationObservations'];
+export const BACKUP_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'stockMovements', 'companionEntries', 'calculations', 'attachments', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements', 'purchases', 'purchaseLineItems', 'blindSessions', 'blindSamples', 'maturationPlans', 'maturationCheckpoints', 'maturationObservations', 'experimentDesigns', 'experimentDesignFactors', 'experimentDesignConditions', 'experimentDesignResponses', 'experimentDesignRuns'];
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 

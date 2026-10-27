@@ -22,6 +22,7 @@ The core workflow is functional in the browser:
 14. Record receipt-backed purchases against material lots and cost physical batches from their actual additions.
 15. Create blind sensory sessions that randomize physical batches into opaque codes, collect evaluator observations, lock progress, and explicitly unblind results.
 16. Create maturation and stability observation plans with custom checkpoints, storage conditions, evidence-backed observations, and a chronological comparison timeline.
+17. Plan controlled experiments with factors, condition arms, independent replicates, persisted execution randomisation, actual-run links, and cautious descriptive repeatability review.
 
 ## Features
 
@@ -37,6 +38,7 @@ The core workflow is functional in the browser:
 - Purchase costs and batch costing: preserve supplier, date, invoice/reference, currency, receipt evidence, line-level quantity/unit/price/total, discount/tax/shipping, lot links, and historical prices. Batch costing uses actual additions and an explicit lot receipt source; missing evidence, ambiguous receipts, and incompatible units remain uncosted instead of being estimated.
 - Blind sensory testing: create sessions from existing physical batches, persist a Fisher–Yates randomized order and opaque `BT-` sample codes, record existing sensory-evaluation fields without exposing identities, require one observation per sample before locking, and reveal code-to-batch/formula mappings only through an explicit unblind action. This is a workflow safeguard over browser-local state, not cryptographic access control.
 - Maturation & stability tracker: create multiple plans per physical batch with user-defined date or elapsed-time checkpoints, preserve planned versus actual timing, record storage conditions and subjective physical/sensory changes separately from optional measured values, and show upcoming, due, overdue, completed, and evidence-status states without inventing a stability, safety, compliance, or readiness conclusion.
+- Experiment Design & Repeatability: define user-owned factors, levels, controlled conditions, response measures, formula-revision-linked condition arms, and planned replicates; persist randomized execution order; link runs to existing physical batches and evidence; and calculate compatible numeric descriptive summaries only when actual completed replication supports them. The workspace does not claim causality, statistical significance, or scientific proof.
 - Sensory timeline records for multiple intervals after mixing and a comparison view that keeps subjective impressions separate from measured-result text.
 - Keyboard-friendly dialogs, readable tables, responsive mobile layouts, empty states, sample-data warnings, and local JSON export.
 
@@ -63,13 +65,14 @@ tests/equipment.test.mjs    Equipment, verification, maintenance, measurement te
 tests/purchase-costs.test.mjs Purchase evidence and actual batch costing tests
 tests/blind-sensory.test.mjs Blind session, shuffle, lock, and unblind tests
 tests/maturation-stability.test.mjs Maturation plans, checkpoints, evidence, and timeline tests
+tests/experiment-design.test.mjs Experiment design, randomization, execution, and review tests
 tests/backup.test.mjs       Backup validation, merge, and round-trip tests
 tests/persistence.test.mjs  Adapter and legacy migration tests
 tests/comparison.test.mjs   Deterministic comparison and summary tests
 scripts/                    Lint, type-model, and static build checks
 ```
 
-The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, equipment, verification events, maintenance events, measurements, purchases, purchase line items, blind-testing sessions and samples, maturation plans, checkpoints, and observations, Companion observations, stock movements, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, equipment, verification events, maintenance events, measurements, purchases, purchase line items, blind-testing sessions and samples, maturation plans, checkpoints, and observations, experiment designs, factors, conditions, response measures, planned runs, Companion observations, stock movements, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
 
 ## Stock ledger and history integrity
 
@@ -135,7 +138,7 @@ The current persistence boundary is browser-local `localStorage`: it survives re
 
 ### Browser acceptance tests
 
-The repeatable browser suites are `tests/browser/b6-portability.spec.mjs`, `tests/browser/coach.spec.mjs`, `tests/browser/equipment.spec.mjs`, `tests/browser/purchase-costs.spec.mjs`, `tests/browser/blind-sensory.spec.mjs`, and `tests/browser/maturation-stability.spec.mjs`. They use Playwright with isolated browser contexts, real JSON files, the hidden import file input via `setInputFiles()`, actual UI export downloads, reload readback, duplicate-safe merge, conflict preview, replacement recovery, invalid-file safety, Companion/batch/evaluation round trips, equipment registry/history/measurement flows, receipt-backed purchase entry, partial actual batch costing, blind randomization/observation/lock/unblind flows, and maturation plan/checkpoint/observation/timeline flows. Run `npm run test:browser`; the Playwright Chromium browser is installed with `npx playwright install chromium` when needed. The suites use synthetic fixture data only and do not require AI configuration, credentials, network services, or a database.
+The repeatable browser suites are `tests/browser/b6-portability.spec.mjs`, `tests/browser/coach.spec.mjs`, `tests/browser/equipment.spec.mjs`, `tests/browser/purchase-costs.spec.mjs`, `tests/browser/blind-sensory.spec.mjs`, `tests/browser/maturation-stability.spec.mjs`, and `tests/browser/experiment-design.spec.mjs`. They use Playwright with isolated browser contexts, real JSON files, the hidden import file input via `setInputFiles()`, actual UI export downloads, reload readback, duplicate-safe merge, conflict preview, replacement recovery, invalid-file safety, Companion/batch/evaluation round trips, equipment registry/history/measurement flows, receipt-backed purchase entry, partial actual batch costing, blind randomization/observation/lock/unblind flows, maturation plan/checkpoint/observation/timeline flows, and experiment-design matrix/randomization/execution flows. Run `npm run test:browser`; the Playwright Chromium browser is installed with `npx playwright install chromium` when needed. The suites use synthetic fixture data only and do not require AI configuration, credentials, network services, or a database.
 
 ### Free local AI with Ollama (no API key)
 
