@@ -38,7 +38,7 @@ export function validateUnit(unit) {
  * Same-family conversions do not use density and preserve the requested unit.
  */
 export function convertQuantity(value, fromUnit, toUnit, { density } = {}) {
-  finitePositive(value, 'Quantity');
+  finitePositive(value, 'Quantity', { allowZero: true });
   const from = validateUnit(fromUnit);
   const to = validateUnit(toUnit);
   if (from.kind !== to.kind && (density === undefined || density === null)) {

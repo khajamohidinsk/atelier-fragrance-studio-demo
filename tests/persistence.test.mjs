@@ -129,8 +129,8 @@ test('local storage adapter reports missing storage and preserves the current ke
   const storage = new Map();
   const adapter = createLocalStorageAdapter({ getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) });
   const saved = adapter.save(createInitialState());
-  assert.equal(saved.version, 2);
-  assert.equal(adapter.load().version, 2);
+  assert.equal(saved.version, 3);
+  assert.equal(adapter.load().version, 3);
 });
 
 test('bootstrap after failed load returns locked state that must not be saved', () => {
@@ -139,7 +139,7 @@ test('bootstrap after failed load returns locked state that must not be saved', 
   const boot = bootstrapState(createLocalStorageAdapter(storage));
   assert.equal(boot.locked, true);
   assert.match(boot.error, /malformed/);
-  assert.equal(boot.state.version, 2);
+  assert.equal(boot.state.version, 3);
   assert.deepEqual(writes, [], 'bootstrap must not write anything to storage');
 });
 
@@ -159,7 +159,7 @@ test('bootstrap with empty storage (fresh environment) is unlocked with fresh st
   const boot = bootstrapState(adapter);
   assert.equal(boot.locked, false);
   assert.equal(boot.error, '');
-  assert.equal(boot.state.version, 2);
+  assert.equal(boot.state.version, 3);
 });
 
 test('loadState rejects malformed saved data instead of returning seed state', () => {
@@ -167,7 +167,7 @@ test('loadState rejects malformed saved data instead of returning seed state', (
   assert.throws(() => loadState({ getItem: () => 'null' }), /malformed/);
   assert.throws(() => loadState({ getItem: () => '[1, 2]' }), /malformed/);
   assert.throws(() => loadState({ getItem: () => '"a string"' }), /malformed/);
-  assert.throws(() => loadState({ getItem: () => JSON.stringify({ version: 3 }) }), /unsupported schema version 3/);
+  assert.throws(() => loadState({ getItem: () => JSON.stringify({ version: 4 }) }), /unsupported schema version 4/);
 });
 
 test('loadState returns empty state for structurally valid but sparse saved data', () => {
@@ -182,7 +182,7 @@ test('legacy version 1 state migrates batch additions into auditable stock movem
   const legacy = { ...current, version: 1, stockMovements: undefined };
   legacy.batches = legacy.batches.map(batch => ({ ...batch, actualAdditions: batch.actualAdditions.map(({ stockMovementId, ...addition }) => addition) }));
   const state = loadState({ getItem: () => JSON.stringify(legacy) });
-  assert.equal(state.version, 2);
+  assert.equal(state.version, 3);
   assert.ok(state.stockMovements.some(item => item.provenance === 'migration'));
   assert.ok(state.batches[0].actualAdditions.every(addition => addition.stockMovementId));
 });

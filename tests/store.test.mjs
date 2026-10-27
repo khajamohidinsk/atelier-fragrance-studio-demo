@@ -73,7 +73,7 @@ test('batch summary keeps actual material traceability', () => {
   assert.deepEqual(batchSummary(batch), { totalAmount: 10, totalActiveAmount: 2, unit: 'g', byMaterial: { a: 2, b: 8 }, byLot: {}, variance: null });
 });
 
-test('state export is portable JSON', () => { const exported = JSON.parse(exportState(createInitialState())); assert.equal(exported.version, 2); assert.ok(exported.exportedAt); });
+test('state export is portable JSON', () => { const exported = JSON.parse(exportState(createInitialState())); assert.equal(exported.version, 3); assert.ok(exported.exportedAt); });
 
 test('companion observations preserve original and corrected text through edits', () => {
   let state = { ...createInitialState(), companionEntries: [] };

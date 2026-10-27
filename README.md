@@ -23,6 +23,7 @@ The core workflow is functional in the browser:
 15. Create blind sensory sessions that randomize physical batches into opaque codes, collect evaluator observations, lock progress, and explicitly unblind results.
 16. Create maturation and stability observation plans with custom checkpoints, storage conditions, evidence-backed observations, and a chronological comparison timeline.
 17. Plan controlled experiments with factors, condition arms, independent replicates, persisted execution randomisation, actual-run links, and cautious descriptive repeatability review.
+18. Define versioned measurement methods and SOPs, publish immutable versions, execute an exact version against an existing experiment or batch, and record measurements, observations, evidence, and deviations.
 
 ## Features
 
@@ -39,6 +40,7 @@ The core workflow is functional in the browser:
 - Blind sensory testing: create sessions from existing physical batches, persist a Fisher–Yates randomized order and opaque `BT-` sample codes, record existing sensory-evaluation fields without exposing identities, require one observation per sample before locking, and reveal code-to-batch/formula mappings only through an explicit unblind action. This is a workflow safeguard over browser-local state, not cryptographic access control.
 - Maturation & stability tracker: create multiple plans per physical batch with user-defined date or elapsed-time checkpoints, preserve planned versus actual timing, record storage conditions and subjective physical/sensory changes separately from optional measured values, and show upcoming, due, overdue, completed, and evidence-status states without inventing a stability, safety, compliance, or readiness conclusion.
 - Experiment Design & Repeatability: define user-owned factors, levels, controlled conditions, response measures, formula-revision-linked condition arms, and planned replicates; persist randomized execution order; link runs to existing physical batches and evidence; and calculate compatible numeric descriptive summaries only when actual completed replication supports them. The workspace does not claim causality, statistical significance, or scientific proof.
+- Measurement Methods & SOPs: define structured procedures, required materials/equipment, typed measurement definitions and criteria, required conditions/observations/evidence, publish immutable numbered versions, and execute an exact version against existing experiments or batches. Missing results remain missing; incompatible units remain not evaluated; reports do not imply safety, stability, regulatory approval, or scientific validity.
 - Sensory timeline records for multiple intervals after mixing and a comparison view that keeps subjective impressions separate from measured-result text.
 - Keyboard-friendly dialogs, readable tables, responsive mobile layouts, empty states, sample-data warnings, and local JSON export.
 
@@ -56,6 +58,7 @@ src/domain/store.mjs        Normalized state, relationship helpers, persistence,
 src/domain/persistence.mjs  Injectable browser-local persistence adapter
 src/domain/backup.mjs       Versioned export, validation, merge, and restore
 src/domain/comparison.mjs   Pure deterministic revision comparison
+src/domain/methods.mjs      Versioned method/SOP lifecycle, executions, criteria, and reports
 src/domain/summaries.mjs    Provenance-aware experiment summaries
 src/ui/companion.mjs        Scent Companion editor, speech APIs, AI review flow
 src/ui/companion.css        Namespaced Companion styling
@@ -66,13 +69,15 @@ tests/purchase-costs.test.mjs Purchase evidence and actual batch costing tests
 tests/blind-sensory.test.mjs Blind session, shuffle, lock, and unblind tests
 tests/maturation-stability.test.mjs Maturation plans, checkpoints, evidence, and timeline tests
 tests/experiment-design.test.mjs Experiment design, randomization, execution, and review tests
+tests/methods.test.mjs        Method/SOP lifecycle, execution, criteria, and report tests
+tests/browser/methods-sop.spec.mjs Browser versioning, execution, reload, phone, and keyboard tests
 tests/backup.test.mjs       Backup validation, merge, and round-trip tests
 tests/persistence.test.mjs  Adapter and legacy migration tests
 tests/comparison.test.mjs   Deterministic comparison and summary tests
 scripts/                    Lint, type-model, and static build checks
 ```
 
-The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, equipment, verification events, maintenance events, measurements, purchases, purchase line items, blind-testing sessions and samples, maturation plans, checkpoints, and observations, experiment designs, factors, conditions, response measures, planned runs, Companion observations, stock movements, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, equipment, verification events, maintenance events, measurements, purchases, purchase line items, blind-testing sessions and samples, maturation plans, checkpoints, and observations, experiment designs, factors, conditions, response measures, planned runs, versioned measurement methods/SOPs, method executions, Companion observations, stock movements, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
 
 ## Stock ledger and history integrity
 
@@ -108,7 +113,7 @@ Reloading, navigation, and backup restore reuse the saved assignment rather than
 
 ## Versioned backup and persistence adapter
 
-Backups use the envelope `{format: "atelier-scent-lab-backup", backupVersion: 1, schemaVersion: 2, application, exportedAt, state}`. Schema version 1 is accepted and migrated to the current state schema; future schema versions are rejected before any write. Export includes the complete validated local state: journal and experiment relationships, immutable revisions, materials/lots, append-only stock movements, physical batches and actual additions, sensory evaluations, equipment registry/history, measurements, purchase receipts and line items, lot-price links, blind-testing sessions and randomized sample assignments, Companion observations, calculations, attachments, tags, IDs, timestamps, and provenance. Planned formula quantities remain separate from actual batch additions, and subjective, measured, predicted, AI-generated, and synthetic-demo records remain distinguishable.
+Backups use the envelope `{format: "atelier-scent-lab-backup", backupVersion: 1, schemaVersion: 3, application, exportedAt, state}`. Schema versions 1 and 2 are accepted and migrated to the current state schema; future schema versions are rejected before any write. Export includes the complete validated local state, including `methods`, immutable `methodVersions`, and `methodExecutions`; historical method/version links are preserved, conflicts are not silently overwritten, and invalid relationships are rejected before persistence. Planned formula quantities remain separate from actual batch additions, and subjective, measured, predicted, AI-generated, and synthetic-demo records remain distinguishable. See `docs/METHODS_SOP_LIBRARY.md` for the method-library compatibility contract.
 
 Import validates JSON, format/version, record IDs, units, quantities, duplicate movements, reversal references, ledger replay, and entity relationships before applying anything. The import dialog previews new records, changed IDs, identical/preserved IDs, records discarded by replacement, and missing-reference errors. Merge adds only missing IDs and keeps current conflicting records without overwriting them. Replace explicitly replaces the local state only after validation and first stores the current validated state in the same versioned backup envelope as a recovery backup. The recovery action can restore that previous local state after a replacement. Re-importing the same file is idempotent, and a failed persistence or recovery write leaves the prior saved state intact. The current version-1 local state and legacy `atelier.scent-companion.v1` data are migrated without deleting the source until the new state has been saved successfully.
 
