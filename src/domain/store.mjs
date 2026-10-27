@@ -9,6 +9,8 @@ export const equipmentTypes = ['balance', 'pipette', 'thermometer', 'other'];
 export const equipmentStatuses = ['available', 'under-maintenance', 'out-of-service', 'retired'];
 export const verificationOutcomes = ['pass', 'fail', 'conditional'];
 export const maintenanceEventTypes = ['maintenance', 'inspection', 'repair', 'fault'];
+export const PURCHASE_EVIDENCE_MAX_BYTES = 2 * 1024 * 1024;
+export const purchaseEvidenceKinds = ['file', 'reference'];
 export const STOCK_PRECISION = 1e-9;
 
 const now = () => new Date().toISOString();
@@ -62,6 +64,34 @@ function optionalFinite(value, label) {
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${label} must be a finite number.`);
   return value;
+}
+
+function monetary(value, label, { allowZero = true } = {}) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || (allowZero ? value < 0 : value <= 0)) throw new Error(`${label} must be ${allowZero ? 'zero or greater' : 'greater than zero'}.`);
+  const rounded = Math.round((value + Number.EPSILON) * 1e6) / 1e6;
+  if (Math.abs(value - rounded) > 1e-9) throw new Error(`${label} has too many decimal places.`);
+  return rounded;
+}
+
+function currencyCode(value) {
+  const result = requireText(value, 'Currency').toUpperCase();
+  if (!/^[A-Z]{3}$/.test(result)) throw new Error('Currency must be a three-letter ISO-style code.');
+  return result;
+}
+
+function normalizeReceiptEvidence(input) {
+  if (input === undefined || input === null || input === '') return undefined;
+  if (typeof input !== 'object' || Array.isArray(input)) throw new Error('Receipt evidence must be an object.');
+  const kind = input.kind || (input.dataUrl ? 'file' : 'reference');
+  if (!purchaseEvidenceKinds.includes(kind)) throw new Error(`Unsupported receipt evidence kind "${kind}".`);
+  const evidence = { kind, reference: requireText(input.reference, 'Receipt evidence reference'), fileName: input.fileName || undefined, mediaType: input.mediaType || undefined, sizeBytes: input.sizeBytes, dataUrl: input.dataUrl || undefined };
+  if (kind === 'file') {
+    if (!evidence.fileName) throw new Error('Receipt file evidence needs a file name.');
+    if (!evidence.mediaType || !/^(image\/|application\/pdf$|text\/plain$)/.test(evidence.mediaType)) throw new Error('Receipt file type must be an image, PDF, or plain text file.');
+    if (!Number.isInteger(evidence.sizeBytes) || evidence.sizeBytes < 0 || evidence.sizeBytes > PURCHASE_EVIDENCE_MAX_BYTES) throw new Error(`Receipt file must be no larger than ${PURCHASE_EVIDENCE_MAX_BYTES} bytes.`);
+    if (evidence.dataUrl && !evidence.dataUrl.startsWith(`data:${evidence.mediaType};`)) throw new Error('Receipt file data does not match its media type.');
+  }
+  return evidence;
 }
 
 function findMaterial(state, materialId) {
@@ -181,8 +211,8 @@ export function createInitialState() {
   const materialId = 'material-seed-1';
   const batchId = 'batch-seed-1';
   const lots = [
-    { id: 'lot-seed-1', materialId, lotCode: 'DEMO-001', acquiredAt: '2026-10-01', receivedAt: '2026-10-01', receivedAmount: 100, receivedUnit: 'g', purity: 100, stockConcentration: 100, solvent: 'None', notes: 'Synthetic sample lot.' },
-    { id: 'lot-seed-2', materialId: 'material-seed-2', lotCode: 'DEMO-002', acquiredAt: '2026-10-01', receivedAt: '2026-10-01', receivedAmount: 100, receivedUnit: 'g', purity: 100, stockConcentration: 0, solvent: 'None', notes: 'Synthetic sample lot.' }
+    { id: 'lot-seed-1', materialId, lotCode: 'DEMO-001', acquiredAt: '2026-10-01', receivedAt: '2026-10-01', receivedAmount: 100, receivedUnit: 'g', purity: 100, stockConcentration: 100, solvent: 'None', purchaseLineItemIds: [], notes: 'Synthetic sample lot.' },
+    { id: 'lot-seed-2', materialId: 'material-seed-2', lotCode: 'DEMO-002', acquiredAt: '2026-10-01', receivedAt: '2026-10-01', receivedAmount: 100, receivedUnit: 'g', purity: 100, stockConcentration: 0, solvent: 'None', purchaseLineItemIds: [], notes: 'Synthetic sample lot.' }
   ];
   return {
     version: CURRENT_SCHEMA_VERSION,
@@ -198,11 +228,11 @@ export function createInitialState() {
       { id: 'movement-seed-1', materialId, materialLotId: 'lot-seed-1', movementType: 'consumption', quantity: 20, unit: 'g', occurredAt: '2026-10-10T09:30:00.000Z', batchId, additionId: 'addition-seed-1', note: 'Seed batch consumption.', provenance: 'synthetic-demo' },
       { id: 'movement-seed-2', materialId: 'material-seed-2', materialLotId: 'lot-seed-2', movementType: 'consumption', quantity: 80, unit: 'g', occurredAt: '2026-10-10T09:30:00.000Z', batchId, additionId: 'addition-seed-2', note: 'Seed batch consumption.', provenance: 'synthetic-demo' }
     ],
-    calculations: [], tags: ['atmospheric', 'woody', 'fresh'], attachments: [], companionEntries: [], equipment: [], verificationEvents: [], maintenanceEvents: [], measurements: []
+    calculations: [], tags: ['atmospheric', 'woody', 'fresh'], attachments: [], companionEntries: [], equipment: [], verificationEvents: [], maintenanceEvents: [], measurements: [], purchases: [], purchaseLineItems: []
   };
 }
 
-const STATE_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'calculations', 'tags', 'attachments', 'companionEntries', 'stockMovements', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements'];
+const STATE_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'calculations', 'tags', 'attachments', 'companionEntries', 'stockMovements', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements', 'purchases', 'purchaseLineItems'];
 
 export function normalizeState(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Atelier state must be a JSON object.');
@@ -212,7 +242,7 @@ export function normalizeState(input) {
   for (const key of STATE_COLLECTIONS) state[key] = Array.isArray(state[key]) ? state[key] : [];
   state.materials = state.materials.map(material => {
     if (!material || typeof material !== 'object') throw new Error('Material records must be JSON objects.');
-    return { ...material, lots: Array.isArray(material.lots) ? material.lots.map(lot => { if (!lot || typeof lot !== 'object') throw new Error('Material lot records must be JSON objects.'); return { ...lot, materialId: lot.materialId || material.id }; }) : [] };
+    return { ...material, lots: Array.isArray(material.lots) ? material.lots.map(lot => { if (!lot || typeof lot !== 'object') throw new Error('Material lot records must be JSON objects.'); return { ...lot, materialId: lot.materialId || material.id, purchaseLineItemIds: Array.isArray(lot.purchaseLineItemIds) ? lot.purchaseLineItemIds : [] }; }) : [] };
   });
   if ((input.version || 1) < CURRENT_SCHEMA_VERSION && (!Array.isArray(input.stockMovements) || input.stockMovements.length === 0)) {
     // Legacy v1 batches recorded actual additions but no stock ledger. We can
@@ -255,6 +285,7 @@ export function validateState(state) {
   const normalized = normalizeState(state);
   allIds(normalized.journalEntries, 'journal entry'); allIds(normalized.experiments, 'experiment'); allIds(normalized.revisions, 'revision'); allIds(normalized.batches, 'batch'); allIds(normalized.evaluations, 'evaluation'); allIds(normalized.stockMovements, 'stock movement');
   const equipmentIds = allIds(normalized.equipment, 'equipment'); allIds(normalized.verificationEvents, 'verification event'); allIds(normalized.maintenanceEvents, 'maintenance event'); allIds(normalized.measurements, 'measurement');
+  const purchaseIds = allIds(normalized.purchases, 'purchase'); allIds(normalized.purchaseLineItems, 'purchase line item');
   const materialIds = allIds(normalized.materials, 'material');
   const lotIds = new Set();
   for (const material of normalized.materials) {
@@ -275,6 +306,7 @@ export function validateState(state) {
       if (lot.lowStockThreshold !== undefined) nonNegativeFinite(lot.lowStockThreshold, `Lot ${lot.id} low-stock threshold`);
       if (lot.expiryDate && Number.isNaN(Date.parse(lot.expiryDate))) throw new Error(`Lot ${lot.id} expiry date is invalid.`);
       if (lot.retestDate && Number.isNaN(Date.parse(lot.retestDate))) throw new Error(`Lot ${lot.id} retest date is invalid.`);
+      if (!Array.isArray(lot.purchaseLineItemIds) || new Set(lot.purchaseLineItemIds).size !== lot.purchaseLineItemIds.length) throw new Error(`Lot ${lot.id} purchase links are invalid.`);
     }
   }
   const experimentIds = new Set(normalized.experiments.map(item => item.id)); const revisionIds = new Set(normalized.revisions.map(item => item.id)); const batchIds = new Set(normalized.batches.map(item => item.id));
@@ -307,6 +339,38 @@ export function validateState(state) {
     if (evaluation.provenance === 'measured' && !evaluation.isMeasured) throw new Error(`Evaluation ${evaluation.id} has measured provenance but is not marked measured.`);
     if (evaluation.provenance === 'ai-generated' && !Array.isArray(evaluation.aiSuggestions)) throw new Error(`AI-generated evaluation ${evaluation.id} must keep suggestions in an array.`);
     if (evaluation.scores && typeof evaluation.scores !== 'object') throw new Error(`Evaluation ${evaluation.id} scores must be an object.`);
+  }
+  const purchaseLinesByPurchase = new Map();
+  for (const purchase of normalized.purchases) {
+    requireText(purchase.supplier, `Purchase ${purchase.id} supplier`); timestamp(purchase.purchaseDate, `Purchase ${purchase.id} date`); currencyCode(purchase.currency);
+    if (!Array.isArray(purchase.lineItemIds) || new Set(purchase.lineItemIds).size !== purchase.lineItemIds.length) throw new Error(`Purchase ${purchase.id} line links are invalid.`);
+    if (purchase.receiptEvidence) normalizeReceiptEvidence(purchase.receiptEvidence);
+    monetary(purchase.discount ?? 0, `Purchase ${purchase.id} discount`); monetary(purchase.tax ?? 0, `Purchase ${purchase.id} tax`); monetary(purchase.shipping ?? 0, `Purchase ${purchase.id} shipping`);
+    purchaseLinesByPurchase.set(purchase.id, new Set(purchase.lineItemIds));
+    for (const lineId of purchase.lineItemIds) if (!normalized.purchaseLineItems.some(item => item.id === lineId)) throw new Error(`Purchase ${purchase.id} references an unknown line item.`);
+  }
+  for (const line of normalized.purchaseLineItems) {
+    if (!purchaseIds.has(line.purchaseId)) throw new Error(`Purchase line item ${line.id} references an unknown purchase.`);
+    if (!purchaseLinesByPurchase.get(line.purchaseId)?.has(line.id)) throw new Error(`Purchase ${line.purchaseId} is missing line item link ${line.id}.`);
+    if (!materialIds.has(line.materialId)) throw new Error(`Purchase line item ${line.id} references an unknown material.`);
+    const { material, lot } = findLot(normalized, line.materialLotId);
+    if (material.id !== line.materialId) throw new Error(`Purchase line item ${line.id} material and lot do not match.`);
+    positiveFinite(line.quantity, `Purchase line item ${line.id} quantity`); validateUnit(line.unit); monetary(line.unitPrice, `Purchase line item ${line.id} unit price`); monetary(line.lineTotal, `Purchase line item ${line.id} line total`);
+    if (Math.abs(line.lineTotal - line.quantity * line.unitPrice) > 0.000001) throw new Error(`Purchase line item ${line.id} line total does not match quantity and unit price.`);
+    if (!lot.purchaseLineItemIds.includes(line.id)) throw new Error(`Lot ${line.materialLotId} is missing purchase line link ${line.id}.`);
+  }
+  for (const purchase of normalized.purchases) {
+    const subtotal = normalized.purchaseLineItems.filter(line => line.purchaseId === purchase.id).reduce((sum, line) => sum + line.lineTotal, 0);
+    const total = subtotal - (purchase.discount || 0) + (purchase.tax || 0) + (purchase.shipping || 0);
+    if (total < -0.000001) throw new Error(`Purchase ${purchase.id} total cannot be negative.`);
+  }
+  for (const material of normalized.materials) for (const lot of material.lots || []) for (const lineId of lot.purchaseLineItemIds) {
+    const line = normalized.purchaseLineItems.find(item => item.id === lineId);
+    if (!line || line.materialLotId !== lot.id || line.materialId !== material.id) throw new Error(`Lot ${lot.id} has an invalid purchase line link.`);
+  }
+  for (const batch of normalized.batches) for (const addition of batch.actualAdditions || []) if (addition.purchaseLineItemId) {
+    const line = normalized.purchaseLineItems.find(item => item.id === addition.purchaseLineItemId);
+    if (!line || line.materialId !== addition.materialId || line.materialLotId !== addition.materialLotId) throw new Error(`Batch addition ${addition.id} purchase line does not match its material or lot.`);
   }
   for (const equipment of normalized.equipment) {
     requireText(equipment.name, `Equipment ${equipment.id} name`);
@@ -418,6 +482,83 @@ export function inventorySummary(state, { today = new Date().toISOString().slice
     return { materialId: material.id, materialName: material.name, lot: { ...lot }, ...status, warnings };
   }));
   return { lots, unknownLots: lots.filter(item => !item.balanceKnown), lowStock: lots.filter(item => item.warnings.includes('Below low-stock threshold.')), dateWarnings: lots.filter(item => item.warnings.some(warning => warning.includes('date'))), recentMovements: normalized.stockMovements.slice().sort((a, b) => String(b.occurredAt).localeCompare(String(a.occurredAt))).slice(0, 12) };
+}
+
+function findPurchase(state, purchaseId) {
+  const purchase = state.purchases.find(item => item.id === purchaseId);
+  if (!purchase) throw new Error(`Purchase "${purchaseId}" was not found.`);
+  return purchase;
+}
+
+function normalizePurchaseLine(input, purchaseId) {
+  const quantity = positiveFinite(Number(input.quantity), 'Purchase quantity');
+  const unitPrice = monetary(Number(input.unitPrice), 'Purchase unit price');
+  const calculatedTotal = Math.round(quantity * unitPrice * 1e6) / 1e6;
+  const lineTotal = monetary(input.lineTotal === undefined || input.lineTotal === '' ? calculatedTotal : Number(input.lineTotal), 'Purchase line total');
+  if (Math.abs(lineTotal - calculatedTotal) > 0.000001) throw new Error('Purchase line total must equal quantity multiplied by unit price.');
+  return { id: input.id || id('purchase-line'), purchaseId, materialId: requireText(input.materialId, 'Purchase material'), materialLotId: requireText(input.materialLotId, 'Purchase lot'), quantity, unit: requireText(input.unit, 'Purchase unit'), unitPrice, lineTotal, notes: input.notes || '' };
+}
+
+function withPurchaseLotLinks(state, lineItems, removeLineIds = new Set()) {
+  const byLot = new Map();
+  for (const line of lineItems) byLot.set(line.materialLotId, [...(byLot.get(line.materialLotId) || []), line.id]);
+  const materials = state.materials.map(material => ({ ...material, lots: (material.lots || []).map(lot => {
+    const existing = (lot.purchaseLineItemIds || []).filter(lineId => !removeLineIds.has(lineId));
+    const additions = byLot.get(lot.id) || [];
+    return { ...lot, purchaseLineItemIds: [...new Set([...existing, ...additions])] };
+  }) }));
+  return materials;
+}
+
+export function purchaseSummary(state, purchaseId) {
+  const normalized = normalizeState(state); const purchase = findPurchase(normalized, purchaseId); const lineItems = normalized.purchaseLineItems.filter(item => item.purchaseId === purchase.id);
+  const subtotal = lineItems.reduce((sum, line) => sum + line.lineTotal, 0); const adjustments = -(purchase.discount || 0) + (purchase.tax || 0) + (purchase.shipping || 0);
+  const adjustmentsAllocatable = subtotal > 0 || Math.abs(adjustments) <= 0.000001;
+  const allocations = lineItems.map(line => { const share = subtotal > 0 ? line.lineTotal / subtotal : 0; const effectiveLineTotal = line.lineTotal + adjustments * share; return { ...line, effectiveLineTotal, effectiveUnitPrice: line.quantity > 0 ? effectiveLineTotal / line.quantity : null }; });
+  return { purchase: { ...purchase }, lineItems: allocations, subtotal, discount: purchase.discount || 0, tax: purchase.tax || 0, shipping: purchase.shipping || 0, total: subtotal + adjustments, adjustmentsAllocatable, receiptVerified: Boolean(purchase.receiptEvidence) };
+}
+
+export function addPurchase(state, input) {
+  const normalized = normalizeState(state); const purchaseId = input.id || id('purchase'); const lineInputs = Array.isArray(input.lineItems) ? input.lineItems : [];
+  if (!lineInputs.length) throw new Error('At least one purchase line item is required.');
+  const lineItems = lineInputs.map(line => normalizePurchaseLine(line, purchaseId));
+  const purchase = { id: purchaseId, supplier: requireText(input.supplier, 'Purchase supplier'), purchaseDate: timestamp(requireText(input.purchaseDate, 'Purchase date'), 'Purchase date'), receiptNumber: input.receiptNumber || '', currency: currencyCode(input.currency), receiptEvidence: normalizeReceiptEvidence(input.receiptEvidence), discount: monetary(input.discount === undefined || input.discount === '' ? 0 : Number(input.discount), 'Purchase discount'), tax: monetary(input.tax === undefined || input.tax === '' ? 0 : Number(input.tax), 'Purchase tax'), shipping: monetary(input.shipping === undefined || input.shipping === '' ? 0 : Number(input.shipping), 'Purchase shipping'), notes: input.notes || '', lineItemIds: lineItems.map(line => line.id), createdAt: input.createdAt || now(), updatedAt: now() };
+  const next = { ...normalized, purchases: [purchase, ...normalized.purchases], purchaseLineItems: [...lineItems, ...normalized.purchaseLineItems], materials: withPurchaseLotLinks(normalized, lineItems) };
+  if (purchaseSummary(next, purchaseId).total < 0) throw new Error('Purchase total cannot be negative.');
+  return validateState(next);
+}
+
+export function updatePurchase(state, purchaseId, input) {
+  const normalized = normalizeState(state); const existing = findPurchase(normalized, purchaseId); const existingLineIds = new Set(existing.lineItemIds || []);
+  const lineInputs = input.lineItems === undefined ? normalized.purchaseLineItems.filter(item => item.purchaseId === purchaseId) : input.lineItems;
+  if (!Array.isArray(lineInputs) || !lineInputs.length) throw new Error('At least one purchase line item is required.');
+  const lineItems = lineInputs.map(line => normalizePurchaseLine(line, purchaseId));
+  const merged = { ...existing, ...input, id: existing.id, supplier: requireText(input.supplier ?? existing.supplier, 'Purchase supplier'), purchaseDate: timestamp(requireText(input.purchaseDate ?? existing.purchaseDate, 'Purchase date'), 'Purchase date'), currency: currencyCode(input.currency ?? existing.currency), receiptEvidence: input.receiptEvidence === undefined ? existing.receiptEvidence : normalizeReceiptEvidence(input.receiptEvidence), discount: monetary(input.discount === undefined ? existing.discount : Number(input.discount), 'Purchase discount'), tax: monetary(input.tax === undefined ? existing.tax : Number(input.tax), 'Purchase tax'), shipping: monetary(input.shipping === undefined ? existing.shipping : Number(input.shipping), 'Purchase shipping'), lineItemIds: lineItems.map(line => line.id), updatedAt: now() };
+  const retainedLines = normalized.purchaseLineItems.filter(line => !existingLineIds.has(line.id));
+  const next = { ...normalized, purchases: normalized.purchases.map(item => item.id === purchaseId ? merged : item), purchaseLineItems: [...lineItems, ...retainedLines], materials: withPurchaseLotLinks(normalized, lineItems, existingLineIds) };
+  if (purchaseSummary(next, purchaseId).total < 0) throw new Error('Purchase total cannot be negative.');
+  return validateState(next);
+}
+
+export function calculateBatchCost(state, batchId) {
+  const normalized = normalizeState(state); const batch = normalized.batches.find(item => item.id === batchId); if (!batch) throw new Error(`Batch "${batchId}" was not found.`);
+  const rows = []; const uncosted = []; const totalsByCurrency = {};
+  for (const addition of batch.actualAdditions || []) {
+    const material = findMaterial(normalized, addition.materialId); const base = { additionId: addition.id, materialId: addition.materialId, materialName: material.name, materialLotId: addition.materialLotId, quantity: addition.amount, unit: addition.unit, costable: false };
+    if (!addition.materialLotId) { uncosted.push({ ...base, reason: 'missing-lot', message: 'No inventory lot was recorded for this actual addition.' }); rows.push({ ...base, reason: 'missing-lot', message: 'No inventory lot was recorded for this actual addition.' }); continue; }
+    const candidates = normalized.purchaseLineItems.filter(line => line.materialLotId === addition.materialLotId && line.materialId === addition.materialId);
+    let line = addition.purchaseLineItemId ? normalized.purchaseLineItems.find(item => item.id === addition.purchaseLineItemId) : candidates.length === 1 ? candidates[0] : null;
+    if (addition.purchaseLineItemId && (!line || line.materialLotId !== addition.materialLotId || line.materialId !== addition.materialId)) line = null;
+    if (!line) { const reason = addition.purchaseLineItemId ? 'invalid-purchase-link' : candidates.length ? 'ambiguous-purchase-source' : 'missing-purchase-price'; const message = addition.purchaseLineItemId ? 'The selected purchase line does not match this addition.' : candidates.length ? 'Multiple purchase lines exist for this lot; select the exact receipt on the actual addition.' : 'No purchase line is linked to this lot.'; const row = { ...base, reason, message }; uncosted.push(row); rows.push(row); continue; }
+    const purchase = normalized.purchases.find(item => item.id === line.purchaseId); const summary = purchaseSummary(normalized, purchase.id); const summaryLine = summary.lineItems.find(item => item.id === line.id);
+    if (!purchase.receiptEvidence) { const row = { ...base, purchaseLineItemId: line.id, purchaseId: purchase.id, receiptNumber: purchase.receiptNumber, reason: 'missing-receipt-evidence', message: 'Purchase price is recorded but has no receipt evidence; it is not receipt-verified.' }; uncosted.push(row); rows.push(row); continue; }
+    if (!summary.adjustmentsAllocatable) { const row = { ...base, purchaseLineItemId: line.id, purchaseId: purchase.id, reason: 'unallocatable-purchase-adjustment', message: 'Purchase-level discount, tax, or shipping cannot be allocated because the receipt subtotal is zero.' }; uncosted.push(row); rows.push(row); continue; }
+    let quantityInPurchaseUnit;
+    try { quantityInPurchaseUnit = convertQuantity(addition.amount, addition.unit, line.unit, { density: lotOf(normalized, addition.materialLotId).density }); } catch { const row = { ...base, purchaseLineItemId: line.id, purchaseId: purchase.id, reason: 'incompatible-unit', message: `Cannot convert ${addition.unit} to the purchase unit ${line.unit} without compatible units or density.` }; uncosted.push(row); rows.push(row); continue; }
+    const cost = quantityInPurchaseUnit * summaryLine.effectiveUnitPrice; const row = { ...base, purchaseLineItemId: line.id, purchaseId: purchase.id, receiptNumber: purchase.receiptNumber, receiptReference: purchase.receiptEvidence.reference, currency: purchase.currency, quantityInPurchaseUnit, purchaseUnit: line.unit, unitCost: summaryLine.effectiveUnitPrice, attributableCost: cost, costable: true };
+    rows.push(row); totalsByCurrency[purchase.currency] = (totalsByCurrency[purchase.currency] || 0) + cost;
+  }
+  const currencies = Object.keys(totalsByCurrency); return { batchId: batch.id, rows, costable: rows.filter(row => row.costable), uncosted, complete: uncosted.length === 0, totalsByCurrency, total: currencies.length === 1 && uncosted.length === 0 ? totalsByCurrency[currencies[0]] : null, currencies };
 }
 
 function findEquipment(state, equipmentId) {
@@ -632,13 +773,13 @@ export function addEvaluation(state, experimentId, input) {
 
 export function deleteMaterial(state, materialId) {
   const normalized = normalizeState(state); findMaterial(normalized, materialId);
-  if (normalized.stockMovements.some(item => item.materialId === materialId) || normalized.revisions.some(revision => (revision.ingredients || []).some(item => item.materialId === materialId)) || normalized.batches.some(batch => (batch.actualAdditions || []).some(item => item.materialId === materialId))) throw new Error('Referenced materials cannot be deleted; preserve their history instead.');
+  if (normalized.stockMovements.some(item => item.materialId === materialId) || normalized.revisions.some(revision => (revision.ingredients || []).some(item => item.materialId === materialId)) || normalized.batches.some(batch => (batch.actualAdditions || []).some(item => item.materialId === materialId)) || normalized.purchaseLineItems.some(item => item.materialId === materialId)) throw new Error('Referenced materials cannot be deleted; preserve their history instead.');
   return validateState({ ...normalized, materials: normalized.materials.filter(item => item.id !== materialId) });
 }
 
 export function deleteLot(state, lotId) {
   const normalized = normalizeState(state); const { material } = findLot(normalized, lotId);
-  if (normalized.stockMovements.some(item => item.materialLotId === lotId) || normalized.revisions.some(revision => (revision.ingredients || []).some(item => item.lotId === lotId)) || normalized.batches.some(batch => (batch.actualAdditions || []).some(item => item.materialLotId === lotId))) throw new Error('Referenced lots cannot be deleted; preserve their history instead.');
+  if (normalized.stockMovements.some(item => item.materialLotId === lotId) || normalized.revisions.some(revision => (revision.ingredients || []).some(item => item.lotId === lotId)) || normalized.batches.some(batch => (batch.actualAdditions || []).some(item => item.materialLotId === lotId)) || normalized.purchaseLineItems.some(item => item.materialLotId === lotId)) throw new Error('Referenced lots cannot be deleted; preserve their history instead.');
   return validateState({ ...normalized, materials: normalized.materials.map(item => item.id === material.id ? { ...item, lots: item.lots.filter(lot => lot.id !== lotId) } : item) });
 }
 
