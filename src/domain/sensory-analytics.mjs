@@ -80,15 +80,19 @@ function descriptorSummary(evaluations) {
   return { terms: [...counts.values()].sort((left, right) => right.count - left.count || left.descriptor.localeCompare(right.descriptor)), missingRecords: missing, records: evaluations.length };
 }
 
-function pairMetrics(pairs, basis, candidateRecords, excludedRecords) {
+function pairMetrics(pairs, basis, candidates, exclusions) {
   const exact = pairs.filter(pair => pair.left === pair.right).length;
   const withinOne = pairs.filter(pair => Math.abs(pair.left - pair.right) <= 1).length;
+  const includedIds = new Set(pairs.flatMap(pair => pair.sourceEvaluationIds));
+  for (const evaluation of candidates) if (!includedIds.has(evaluation.id) && !exclusions.has(evaluation.id)) exclusions.set(evaluation.id, 'No comparable partner in the same pairing group.');
   return {
     status: pairs.length ? 'calculated' : 'insufficient-data',
     reason: pairs.length ? '' : 'At least two valid, explicitly paired 1–5 observations are required.',
     basis,
-    candidateRecords,
-    excludedRecords,
+    candidateRecords: candidates.length,
+    includedRecords: includedIds.size,
+    excludedRecords: exclusions.size,
+    exclusions: [...exclusions].map(([evaluationId, reason]) => ({ evaluationId, reason })),
     validPairs: pairs.length,
     exactAgreement: pairs.length ? exact / pairs.length : null,
     withinOnePointAgreement: pairs.length ? withinOne / pairs.length : null,
@@ -97,51 +101,67 @@ function pairMetrics(pairs, basis, candidateRecords, excludedRecords) {
   };
 }
 
-function trialPairs(state, evaluations, dimension) {
-  const selected = new Map(evaluations.map(evaluation => [evaluation.id, evaluation])); const groups = new Map(); const linked = new Set();
-  for (const run of array(state.experimentDesignRuns)) {
-    for (const evaluationId of array(run.sensoryEvaluationIds)) {
-      const evaluation = selected.get(evaluationId); if (!evaluation) continue;
-      linked.add(evaluation.id); const value = evaluation.scores?.[dimension]; const key = `${run.designId}|${run.conditionId}|${dimension}`;
-      const group = groups.get(key) || []; group.push({ evaluation, run, value }); groups.set(key, group);
-    }
-  }
-  const pairs = []; let candidates = 0; let excluded = 0;
-  for (const group of groups.values()) {
-    candidates += group.length;
-    for (let leftIndex = 0; leftIndex < group.length; leftIndex += 1) for (let rightIndex = leftIndex + 1; rightIndex < group.length; rightIndex += 1) {
-      const left = group[leftIndex]; const right = group[rightIndex];
-      if (left.run.replicateNumber === right.run.replicateNumber || !validRating(left.value) || !validRating(right.value)) { excluded += 1; continue; }
-      pairs.push({ left: left.value, right: right.value, difference: right.value - left.value, sourceEvaluationIds: [left.evaluation.id, right.evaluation.id], replicateNumbers: [left.run.replicateNumber, right.run.replicateNumber], basis: 'experiment-design replicate links' });
-    }
-  }
-  return { pairs, linked, candidates, excluded };
-}
-
-function repeatedBatchPairs(evaluations, dimension, linkedEvaluationIds) {
-  const groups = new Map(); let candidates = 0; let excluded = 0;
+function repeatPairs(state, evaluations, dimension, exclusions) {
+  const runs = array(state.experimentDesignRuns);
+  const groups = new Map();
   for (const evaluation of evaluations) {
-    if (!evaluation.batchId || linkedEvaluationIds.has(evaluation.id)) continue;
-    const value = evaluation.scores?.[dimension]; const key = `${evaluation.batchId}|${dimension}`; const group = groups.get(key) || [];
-    group.push({ evaluation, value }); groups.set(key, group);
+    const value = evaluation.scores?.[dimension];
+    if (!validRating(value)) {
+      exclusions.set(evaluation.id, own(evaluation.scores, dimension) ? 'Invalid integer 1–5 rating.' : 'Missing rating.');
+      continue;
+    }
+    // Resolve against ALL links, before filtering. Filters cannot disambiguate provenance.
+    const links = runs.filter(run => array(run.sensoryEvaluationIds).includes(evaluation.id));
+    let key; let run;
+    if (links.length) {
+      if (links.length !== 1) { exclusions.set(evaluation.id, 'Evaluation is linked to multiple runs.'); continue; }
+      run = links[0];
+      if (new Set(array(run.sensoryEvaluationIds)).size !== 1) { exclusions.set(evaluation.id, 'Multiple evaluations on one run have no explicit within-run pairing.'); continue; }
+      const design = array(state.experimentDesigns).find(item => item.id === run.designId);
+      const condition = array(state.experimentDesignConditions).find(item => item.id === run.conditionId && item.designId === run.designId);
+      const batch = array(state.batches).find(item => item.id === run.batchId);
+      const validRun = design && condition && batch && array(design.runIds).includes(run.id) && array(design.conditionIds).includes(condition.id)
+        && Number.isInteger(run.replicateNumber) && run.replicateNumber >= 1 && run.replicateNumber <= condition.replicateCount
+        && ['completed', 'deviated'].includes(run.status) && run.batchId === evaluation.batchId
+        && batch.experimentId === condition.experimentId && batch.formulaRevisionId === condition.revisionId
+        && evaluation.experimentId === condition.experimentId && evaluation.revisionId === condition.revisionId;
+      if (!validRun) { exclusions.set(evaluation.id, 'Incomplete or incompatible design, condition, replicate, or batch relationship.'); continue; }
+      if (runs.filter(item => item.designId === run.designId && item.conditionId === run.conditionId && item.replicateNumber === run.replicateNumber).length !== 1) {
+        exclusions.set(evaluation.id, 'Multiple runs claim the same replicate.'); continue;
+      }
+      key = JSON.stringify(['design', run.designId, run.conditionId]);
+    } else {
+      if (!evaluation.batchId) { exclusions.set(evaluation.id, 'No run or physical-batch pairing link.'); continue; }
+      key = JSON.stringify(['batch', evaluation.batchId]);
+    }
+    const group = groups.get(key) || [];
+    group.push({ evaluation, value, run }); groups.set(key, group);
   }
   const pairs = [];
   for (const group of groups.values()) {
-    candidates += group.length;
     for (let leftIndex = 0; leftIndex < group.length; leftIndex += 1) for (let rightIndex = leftIndex + 1; rightIndex < group.length; rightIndex += 1) {
       const left = group[leftIndex]; const right = group[rightIndex];
-      if (!validRating(left.value) || !validRating(right.value)) { excluded += 1; continue; }
-      pairs.push({ left: left.value, right: right.value, difference: right.value - left.value, sourceEvaluationIds: [left.evaluation.id, right.evaluation.id], basis: 'repeated physical-batch link' });
+      pairs.push({ left: left.value, right: right.value, difference: right.value - left.value,
+        sourceEvaluationIds: [left.evaluation.id, right.evaluation.id],
+        ...(left.run ? { replicateNumbers: [left.run.replicateNumber, right.run.replicateNumber] } : {}),
+        basis: left.run ? 'experiment-design replicate links' : 'repeated physical-batch link' });
     }
   }
-  return { pairs, candidates, excluded };
+  return pairs;
 }
 
 function repeatabilitySummary(state, evaluations, dimensions) {
+  const candidates = [...new Map(evaluations.map(evaluation => [evaluation.id, evaluation])).values()].sort((a, b) => a.id.localeCompare(b.id));
   const byDimension = dimensions.map(dimension => {
-    const trial = trialPairs(state, evaluations, dimension); const fallback = repeatedBatchPairs(evaluations, dimension, trial.linked);
-    const source = trial.pairs.length ? trial : fallback; const basis = trial.pairs.length ? 'Explicit experiment-design replicate links.' : fallback.pairs.length ? 'Repeated evaluations share an explicit physical-batch link; evaluator and trial identity are unavailable.' : 'No explicit replicate or repeated physical-batch pairing produced two valid ratings.';
-    return { dimension, ...pairMetrics(source.pairs, basis, trial.candidates + fallback.candidates, trial.excluded + fallback.excluded) };
+    const exclusions = new Map();
+    if (!KNOWN_RATING_DIMENSIONS.includes(dimension)) {
+      const reason = 'Unsupported dimension: no verified integer 1–5 scale; repeatability is not calculated.';
+      for (const evaluation of candidates) exclusions.set(evaluation.id, reason);
+      return { dimension, ...pairMetrics([], 'Unverified scale.', candidates, exclusions), status: 'not-calculated', reason };
+    }
+    const pairs = repeatPairs(state, candidates, dimension, exclusions);
+    const basis = 'Pairs stay within one design and condition across distinct replicates, or within one physical-batch group for records without run links. These groups are never cross-paired; evaluator identity is unavailable.';
+    return { dimension, ...pairMetrics(pairs, basis, candidates, exclusions) };
   });
   return { dimensions: byDimension, limitations: ['Repeatability is descriptive agreement between explicitly linked observations, not chemical measurement accuracy.', 'Evaluator identity is not stored per evaluation, so within-evaluator consistency is not calculated.'] };
 }
@@ -150,7 +170,7 @@ function maturationAnalytics(state, filters) {
   const plans = array(state.maturationPlans).filter(plan => !filters.maturationPlanId || plan.id === filters.maturationPlanId);
   const checkpoints = array(state.maturationCheckpoints); const observations = array(state.maturationObservations).filter(observation => plans.some(plan => plan.id === observation.planId) && (!filters.checkpointId || observation.checkpointId === filters.checkpointId) && dateMatches(observation.observedAt, filters));
   const summaries = plans.flatMap(plan => array(plan.checkpointIds).map(checkpointId => {
-    const checkpoint = checkpoints.find(item => item.id === checkpointId); if (!checkpoint) return null;
+    const checkpoint = checkpoints.find(item => item.id === checkpointId); if (!checkpoint || (filters.checkpointId && checkpoint.id !== filters.checkpointId)) return null;
     const rows = observations.filter(observation => observation.planId === plan.id && observation.checkpointId === checkpoint.id); const descriptorCounts = new Map();
     for (const row of rows) for (const descriptor of array(row.descriptors)) { const key = String(descriptor).trim().toLocaleLowerCase(); if (key) descriptorCounts.set(key, (descriptorCounts.get(key) || 0) + 1); }
     return { planId: plan.id, planName: plan.name, checkpointId: checkpoint.id, checkpointLabel: checkpoint.label, plannedAt: checkpoint.plannedAt, observedRecords: rows.length, missingObservation: rows.length === 0, incompleteEvidence: rows.filter(row => row.evidenceStatus === 'incomplete').length, descriptors: [...descriptorCounts.entries()].sort((left, right) => right[1] - left[1]).map(([descriptor, count]) => ({ descriptor, count })), sourceObservationIds: rows.map(row => row.id), subjectiveRecords: rows.filter(row => [row.appearance, row.color, row.clarity, row.phaseSeparation, row.viscosity, row.subjectiveOdour, row.notes].some(value => String(value || '').trim())).length };
