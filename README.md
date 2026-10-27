@@ -17,6 +17,7 @@ The core workflow is functional in the browser:
 9. Export and validate a versioned JSON backup, then merge or replace local state through an explicit import workflow.
 10. Compare revisions using deterministic ingredient/evaluation evidence and provenance warnings.
 11. Open Scent Companion for editable sensory notes, browser dictation, optional vocabulary guidance, and spoken formulation briefings.
+12. Open Experiment Coach for a read-only, source-linked debrief and a proposed next controlled experiment.
 
 ## Features
 
@@ -27,6 +28,7 @@ The core workflow is functional in the browser:
 - Append-only stock movements: opening, receipt, confirmed return, verified adjustment, consumption, wastage/disposal, correction, and reversal. Balances are replayed from movements; they are not independently editable.
 - Batch traceability: every batch references an experiment and exact formula revision, while actual additions retain material, exact lot, and exactly one linked consumption movement.
 - Physical batch workflow: select an experiment and exact revision, record batch identifier, planned size, mixing date, procedure notes, observations, deviations, and structured lot-specific actual additions. Review planned-versus-actual rows, missing additions, extra additions, quantity deviations, and linked stock movements without editing the formula revision.
+- Evidence-aware sensory journal: record multiple timestamped intervals for a physical batch with elapsed time, medium, environment, conditions, descriptors, subjective notes, measured results, longevity/projection methods, predicted outcomes, conclusions, and next steps. Subjective, measured, predicted, AI-generated, synthetic, and missing evidence remain distinct.
 - Sensory timeline records for multiple intervals after mixing and a comparison view that keeps subjective impressions separate from measured-result text.
 - Keyboard-friendly dialogs, readable tables, responsive mobile layouts, empty states, sample-data warnings, and local JSON export.
 
@@ -79,15 +81,23 @@ The inventory dashboard reports known lots, lots requiring reconciliation, low-s
 
 ## Versioned backup and persistence adapter
 
-Backups use the envelope `{format: "atelier-scent-lab-backup", backupVersion: 1, schemaVersion: 2, application, exportedAt, state}`. Import validates JSON, format/version, record IDs, units, quantities, duplicate movements, and relationships before applying anything. The import dialog previews new records and conflicting IDs before a merge. Merge adds only missing IDs and reports conflicting IDs without overwriting current records. Replace explicitly replaces the local state after validation. Re-importing the same file is idempotent, and a failed persistence write is shown as an error rather than reported as success. The current version-1 local state and legacy `atelier.scent-companion.v1` data are migrated without deleting the source until the new state has been saved successfully.
+Backups use the envelope `{format: "atelier-scent-lab-backup", backupVersion: 1, schemaVersion: 2, application, exportedAt, state}`. Schema version 1 is accepted and migrated to the current state schema; future schema versions are rejected before any write. Export includes the complete validated local state: journal and experiment relationships, immutable revisions, materials/lots, append-only stock movements, physical batches and actual additions, sensory evaluations, Companion observations, calculations, attachments, tags, IDs, timestamps, and provenance. Planned formula quantities remain separate from actual batch additions, and subjective, measured, predicted, AI-generated, and synthetic-demo records remain distinguishable.
 
-`src/domain/persistence.mjs` defines the small adapter seam used by the app: `load()`, `save(state)`, `subscribe(listener)`, and `schemaVersion`. The included adapter is synchronous browser `localStorage`; tests use an in-memory adapter. Storage, serialization, malformed-state, quota, and migration failures are surfaced instead of being reported as successful saves or silently reset.
+Import validates JSON, format/version, record IDs, units, quantities, duplicate movements, reversal references, ledger replay, and entity relationships before applying anything. The import dialog previews new records, changed IDs, identical/preserved IDs, records discarded by replacement, and missing-reference errors. Merge adds only missing IDs and keeps current conflicting records without overwriting them. Replace explicitly replaces the local state only after validation and first stores the current validated state in the same versioned backup envelope as a recovery backup. The recovery action can restore that previous local state after a replacement. Re-importing the same file is idempotent, and a failed persistence or recovery write leaves the prior saved state intact. The current version-1 local state and legacy `atelier.scent-companion.v1` data are migrated without deleting the source until the new state has been saved successfully.
+
+`src/domain/persistence.mjs` defines the small adapter seam used by the app: `load()`, `save(state)`, `saveRecovery(state)`, `loadRecovery()`, `subscribe(listener)`, and `schemaVersion`. The included adapter is synchronous browser `localStorage`; tests use an in-memory adapter. Storage, serialization, malformed-state, quota, recovery, and migration failures are surfaced instead of being reported as successful saves or silently reset.
 
 The browser-local boundary still means no cloud backup, cross-device synchronization, authentication, or multi-user access. The adapter is replaceable later; no remote persistence implementation is included here.
 
 ## Recorded-data analysis and provenance
 
 `compareRevisions()` compares stable ingredient keys, quantities, units, concentrations, roles, lots, revision-linked batches, and revision-linked evaluations. It reports incompatible or differing evaluation conditions instead of implying a controlled comparison. `summarizeExperiment()` keeps recorded, measured, subjective, synthetic/demo, and AI-generated categories distinct and emits warnings when evidence is missing or provenance is incomplete. No causal conclusion or missing measurement is invented.
+
+## Experiment Coach
+
+`src/domain/coach.mjs` builds a read-only context from one experiment and its immutable formula revisions, physical batches, actual additions, planned-versus-actual comparison, journal entries, and chronological sensory evaluations. `createExperimentCoachDebrief()` returns evidence-linked claims with stable source IDs, explicit missing/contradictory evidence, provenance labels, and a proposed next controlled experiment containing a hypothesis, one primary variable, observation schedule, and success criterion. Proposed items are labelled hypotheses or protocol suggestions; they are never treated as observations, safety claims, or stock instructions.
+
+The Coach treats free-text observations as quoted, untrusted evidence. Instruction-like text is reported as a prompt-injection warning and is not executed or allowed to change the proposed protocol. The Coach does not write state, modify formulas, alter inventory, or call an AI provider. It reuses deterministic batch and revision comparison logic for arithmetic and provenance checks. The UI keeps this flow read-only and does not add a competing catalogue, research pipeline, or formula engine.
 
 ## Scent Companion
 
@@ -98,6 +108,10 @@ The dictation controller uses `SpeechRecognition` or `webkitSpeechRecognition` w
 Briefing playback uses the browser's built-in `speechSynthesis` / `SpeechSynthesisUtterance` APIs. It does not call an AI speech service and does not require an API key. Voice availability, pronunciation, and offline behavior depend on the browser and installed operating-system voices. Listen becomes available after a briefing has been generated; Pause/Resume and Stop control the active utterance.
 
 The current persistence boundary is browser-local `localStorage`: it survives reloads in the same browser profile but has no cloud backup and does not synchronize across browser profiles, devices, or users. The pure store operations (`addCompanionEntry`, `updateCompanionEntry`, `deleteCompanionEntry`, and `importLegacyCompanionEntries`) are the adapter surface for a future authenticated Ravenn persistence service.
+
+### Browser acceptance tests
+
+The repeatable B6 browser suite is `tests/browser/b6-portability.spec.mjs`. It uses Playwright with isolated browser contexts, real JSON files, the hidden import file input via `setInputFiles()`, actual UI export downloads, reload readback, duplicate-safe merge, conflict preview, replacement recovery, invalid-file safety, and Companion/batch/evaluation round trips. Run `npm run test:browser`; the Playwright Chromium browser is installed with `npx playwright install chromium` when needed. The suite uses synthetic fixture data only and does not require AI configuration, credentials, network services, or a database.
 
 ### Free local AI with Ollama (no API key)
 

@@ -10,10 +10,13 @@ export function summarizeExperiment(state, experimentId) {
   if (!evaluations.length) warnings.push('No recorded evaluations are available.');
   if (evaluations.some(item => !item.isMeasured && item.measuredResults)) warnings.push('Some evaluation text is marked subjective even though measured-result text is present.');
   if (evaluations.some(item => !item.revisionId)) warnings.push('Some evaluations do not carry explicit revision provenance.');
-  return { experimentId, title: experiment.title, provenance: experiment.provenance || 'recorded', revisions, batches, evaluations, warnings };
+  if (evaluations.some(item => item.predictedOutcome)) warnings.push('Predicted outcomes are kept separate from observations.');
+  if (evaluations.some(item => Array.isArray(item.aiSuggestions) && item.aiSuggestions.length)) warnings.push('AI suggestions are not recorded sensory evidence.');
+  return { experimentId, title: experiment.title, provenance: experiment.provenance || 'recorded', revisions, batches, evaluations, chronologicalEvaluations: [...evaluations].sort((a, b) => String(a.evaluatedAt).localeCompare(String(b.evaluatedAt)) || a.id.localeCompare(b.id)), warnings };
 }
 
 export function summarizeRevisionComparison(state, leftRevisionId, rightRevisionId) {
   const comparison = compareRevisions(state, leftRevisionId, rightRevisionId);
-  return { ...comparison, evidence: { recorded: true, measured: [...comparison.leftEvaluations, ...comparison.rightEvaluations].filter(item => item.isMeasured), subjective: [...comparison.leftEvaluations, ...comparison.rightEvaluations].filter(item => !item.isMeasured), aiGenerated: [], synthetic: [...state.journalEntries, ...state.evaluations].filter(item => item.provenance === 'synthetic-demo') } };
+  const evaluations = [...comparison.leftEvaluations, ...comparison.rightEvaluations];
+  return { ...comparison, evidence: { recorded: true, measured: evaluations.filter(item => item.isMeasured), subjective: evaluations.filter(item => item.provenance === 'subjective' || !item.isMeasured), predicted: evaluations.filter(item => item.predictedOutcome), aiGenerated: evaluations.filter(item => item.provenance === 'ai-generated' || item.aiSuggestions?.length), synthetic: [...state.journalEntries, ...state.evaluations].filter(item => item.provenance === 'synthetic-demo'), missing: comparison.missingEvidence } };
 }
