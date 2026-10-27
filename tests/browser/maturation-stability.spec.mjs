@@ -26,6 +26,8 @@ test.beforeAll(async () => {
 test.afterAll(async () => { if (fixtureDirectory) await fs.rm(fixtureDirectory, { recursive: true, force: true }); });
 
 test('maturation plan schedules custom checkpoints, records evidence, compares timeline, and survives reload', async ({ page }) => {
+  // Keep the fixed fixture's 7-day checkpoint in the future on every test run.
+  await page.clock.setFixedTime(new Date('2026-10-26T10:00:00.000Z'));
   await page.goto('/');
   await page.locator('#import-file').setInputFiles(fixturePath);
   await expect(page.locator('#import-dialog')).toBeVisible();
