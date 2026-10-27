@@ -24,6 +24,7 @@ The core workflow is functional in the browser:
 16. Create maturation and stability observation plans with custom checkpoints, storage conditions, evidence-backed observations, and a chronological comparison timeline.
 17. Plan controlled experiments with factors, condition arms, independent replicates, persisted execution randomisation, actual-run links, and cautious descriptive repeatability review.
 18. Define versioned measurement methods and SOPs, publish immutable versions, execute an exact version against an existing experiment or batch, and record measurements, observations, evidence, and deviations.
+19. Open Sensory Panel Analytics for reproducible 1–5 rating distributions, descriptor coverage, explicit repeat-pair summaries, and maturation checkpoint evidence.
 
 ## Features
 
@@ -41,6 +42,7 @@ The core workflow is functional in the browser:
 - Maturation & stability tracker: create multiple plans per physical batch with user-defined date or elapsed-time checkpoints, preserve planned versus actual timing, record storage conditions and subjective physical/sensory changes separately from optional measured values, and show upcoming, due, overdue, completed, and evidence-status states without inventing a stability, safety, compliance, or readiness conclusion.
 - Experiment Design & Repeatability: define user-owned factors, levels, controlled conditions, response measures, formula-revision-linked condition arms, and planned replicates; persist randomized execution order; link runs to existing physical batches and evidence; and calculate compatible numeric descriptive summaries only when actual completed replication supports them. The workspace does not claim causality, statistical significance, or scientific proof.
 - Measurement Methods & SOPs: define structured procedures, required materials/equipment, typed measurement definitions and criteria, required conditions/observations/evidence, publish immutable numbered versions, and execute an exact version against existing experiments or batches. Missing results remain missing; incompatible units remain not evaluated; reports do not imply safety, stability, regulatory approval, or scientific validity.
+- Sensory Panel Analytics: derive rating distributions, median/range and descriptive mean/standard deviation for the explicitly supported 1–5 intensity/longevity/projection dimensions; report missing and excluded records; preserve descriptor text; calculate repeat-pair differences only from explicit experiment-design replicate or repeated physical-batch links; and leave evaluator agreement or maturation rating trends uncalculated when the stored relationships cannot support them.
 - Sensory timeline records for multiple intervals after mixing and a comparison view that keeps subjective impressions separate from measured-result text.
 - Keyboard-friendly dialogs, readable tables, responsive mobile layouts, empty states, sample-data warnings, and local JSON export.
 
@@ -59,6 +61,7 @@ src/domain/persistence.mjs  Injectable browser-local persistence adapter
 src/domain/backup.mjs       Versioned export, validation, merge, and restore
 src/domain/comparison.mjs   Pure deterministic revision comparison
 src/domain/methods.mjs      Versioned method/SOP lifecycle, executions, criteria, and reports
+src/domain/sensory-analytics.mjs  Pure sensory rating, pairing, descriptor, and maturation analytics
 src/domain/summaries.mjs    Provenance-aware experiment summaries
 src/ui/companion.mjs        Scent Companion editor, speech APIs, AI review flow
 src/ui/companion.css        Namespaced Companion styling
@@ -70,7 +73,9 @@ tests/blind-sensory.test.mjs Blind session, shuffle, lock, and unblind tests
 tests/maturation-stability.test.mjs Maturation plans, checkpoints, evidence, and timeline tests
 tests/experiment-design.test.mjs Experiment design, randomization, execution, and review tests
 tests/methods.test.mjs        Method/SOP lifecycle, execution, criteria, and report tests
+tests/sensory-analytics.test.mjs  Rating, missingness, pairing, repeatability, and maturation analytics tests
 tests/browser/methods-sop.spec.mjs Browser versioning, execution, reload, phone, and keyboard tests
+tests/browser/sensory-panel-analytics.spec.mjs  Analytics filters, coded-data boundaries, phone, and keyboard tests
 tests/backup.test.mjs       Backup validation, merge, and round-trip tests
 tests/persistence.test.mjs  Adapter and legacy migration tests
 tests/comparison.test.mjs   Deterministic comparison and summary tests
@@ -78,6 +83,8 @@ scripts/                    Lint, type-model, and static build checks
 ```
 
 The normalized state contains journal entries, experiments, formula revisions, formula ingredients, materials with lots, batches with actual additions, dilution calculations, sensory evaluations, equipment, verification events, maintenance events, measurements, purchases, purchase line items, blind-testing sessions and samples, maturation plans, checkpoints, and observations, experiment designs, factors, conditions, response measures, planned runs, versioned measurement methods/SOPs, method executions, Companion observations, stock movements, attachments, and tags. The current browser adapter persists the complete state in `localStorage` under `atelier-lab-state-v1`; records are not shared across users or devices.
+
+Sensory Panel Analytics is derived in memory from those existing records. It adds no analytics collection or schema migration and does not write summaries to localStorage or backups.
 
 ## Stock ledger and history integrity
 
@@ -143,7 +150,7 @@ The current persistence boundary is browser-local `localStorage`: it survives re
 
 ### Browser acceptance tests
 
-The repeatable browser suites are `tests/browser/b6-portability.spec.mjs`, `tests/browser/coach.spec.mjs`, `tests/browser/equipment.spec.mjs`, `tests/browser/purchase-costs.spec.mjs`, `tests/browser/blind-sensory.spec.mjs`, `tests/browser/maturation-stability.spec.mjs`, and `tests/browser/experiment-design.spec.mjs`. They use Playwright with isolated browser contexts, real JSON files, the hidden import file input via `setInputFiles()`, actual UI export downloads, reload readback, duplicate-safe merge, conflict preview, replacement recovery, invalid-file safety, Companion/batch/evaluation round trips, equipment registry/history/measurement flows, receipt-backed purchase entry, partial actual batch costing, blind randomization/observation/lock/unblind flows, maturation plan/checkpoint/observation/timeline flows, experiment-design matrix/randomization/execution flows, and context-aware Coach recommendation flows. Run `npm run test:browser`; the Playwright Chromium browser is installed with `npx playwright install chromium` when needed. The suites use synthetic fixture data only and do not require AI configuration, credentials, network services, or a database.
+The repeatable browser suites are `tests/browser/b6-portability.spec.mjs`, `tests/browser/coach.spec.mjs`, `tests/browser/equipment.spec.mjs`, `tests/browser/purchase-costs.spec.mjs`, `tests/browser/blind-sensory.spec.mjs`, `tests/browser/maturation-stability.spec.mjs`, `tests/browser/experiment-design.spec.mjs`, and `tests/browser/sensory-panel-analytics.spec.mjs`. They use Playwright with isolated browser contexts, real JSON files, the hidden import file input via `setInputFiles()`, actual UI export downloads, reload readback, duplicate-safe merge, conflict preview, replacement recovery, invalid-file safety, Companion/batch/evaluation round trips, equipment registry/history/measurement flows, receipt-backed purchase entry, partial actual batch costing, blind randomization/observation/lock/unblind flows, maturation plan/checkpoint/observation/timeline flows, experiment-design matrix/randomization/execution flows, Sensory Panel Analytics distributions/filtering/insufficient-data/blinding flows, and context-aware Coach recommendation flows. Run `npm run test:browser`; the Playwright Chromium browser is installed with `npx playwright install chromium` when needed. The suites use synthetic fixture data only and do not require AI configuration, credentials, network services, or a database.
 
 ### Free local AI with Ollama (no API key)
 
