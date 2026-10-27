@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BACKUP_FORMAT, createBackup, mergeBackup, parseBackup, previewBackupMerge, serializeBackup } from '../src/domain/backup.mjs';
-import { createInitialState } from '../src/domain/store.mjs';
+import { addBatch, addExperiment, addRevision, createInitialState } from '../src/domain/store.mjs';
 
 test('backup export and import round-trip preserves collections and IDs', () => {
   const state = createInitialState();
@@ -75,4 +75,17 @@ test('backup merge preview reports new records and conflicts before applying', (
   const preview = previewBackupMerge(current, incoming);
   assert.equal(preview.imported, 1);
   assert.equal(preview.conflicts.length, 1);
+});
+
+test('backup round-trip preserves physical batch metadata, additions, and stock links', () => {
+  const seed = createInitialState();
+  let state = { ...seed, experiments: [], revisions: [], journalEntries: [], batches: [], evaluations: [], stockMovements: seed.stockMovements.filter(item => item.movementType === 'opening') };
+  state = addExperiment(state, { title: 'Backup batch', objective: 'Preserve physical history' });
+  const experiment = state.experiments[0];
+  state = addRevision(state, experiment.id, { ingredients: [{ materialId: 'material-seed-1', lotId: 'lot-seed-1', quantity: 2, unit: 'g' }] });
+  const revision = state.revisions[0];
+  state = addBatch(state, experiment.id, { batchCode: 'BATCH-BACKUP-1', formulaRevisionId: revision.id, plannedAmount: 2, unit: 'g', mixingDate: '2026-10-24T12:00:00.000Z', deviations: 'None', actualAdditions: [{ id: 'addition-backup-1', materialId: 'material-seed-1', materialLotId: 'lot-seed-1', amount: 2, unit: 'g', concentration: 100 }] });
+  const restored = parseBackup(serializeBackup(state));
+  assert.deepEqual(restored.state.batches, state.batches);
+  assert.ok(restored.state.stockMovements.some(item => item.additionId === 'addition-backup-1' && item.batchId === state.batches[0].id));
 });
