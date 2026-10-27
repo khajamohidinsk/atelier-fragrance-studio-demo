@@ -11,6 +11,7 @@ export const verificationOutcomes = ['pass', 'fail', 'conditional'];
 export const maintenanceEventTypes = ['maintenance', 'inspection', 'repair', 'fault'];
 export const PURCHASE_EVIDENCE_MAX_BYTES = 2 * 1024 * 1024;
 export const purchaseEvidenceKinds = ['file', 'reference'];
+export const blindSessionStatuses = ['draft', 'randomized', 'in-progress', 'locked', 'unblinded'];
 export const STOCK_PRECISION = 1e-9;
 
 const now = () => new Date().toISOString();
@@ -228,11 +229,11 @@ export function createInitialState() {
       { id: 'movement-seed-1', materialId, materialLotId: 'lot-seed-1', movementType: 'consumption', quantity: 20, unit: 'g', occurredAt: '2026-10-10T09:30:00.000Z', batchId, additionId: 'addition-seed-1', note: 'Seed batch consumption.', provenance: 'synthetic-demo' },
       { id: 'movement-seed-2', materialId: 'material-seed-2', materialLotId: 'lot-seed-2', movementType: 'consumption', quantity: 80, unit: 'g', occurredAt: '2026-10-10T09:30:00.000Z', batchId, additionId: 'addition-seed-2', note: 'Seed batch consumption.', provenance: 'synthetic-demo' }
     ],
-    calculations: [], tags: ['atmospheric', 'woody', 'fresh'], attachments: [], companionEntries: [], equipment: [], verificationEvents: [], maintenanceEvents: [], measurements: [], purchases: [], purchaseLineItems: []
+    calculations: [], tags: ['atmospheric', 'woody', 'fresh'], attachments: [], companionEntries: [], equipment: [], verificationEvents: [], maintenanceEvents: [], measurements: [], purchases: [], purchaseLineItems: [], blindSessions: [], blindSamples: []
   };
 }
 
-const STATE_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'calculations', 'tags', 'attachments', 'companionEntries', 'stockMovements', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements', 'purchases', 'purchaseLineItems'];
+const STATE_COLLECTIONS = ['journalEntries', 'experiments', 'revisions', 'materials', 'batches', 'evaluations', 'calculations', 'tags', 'attachments', 'companionEntries', 'stockMovements', 'equipment', 'verificationEvents', 'maintenanceEvents', 'measurements', 'purchases', 'purchaseLineItems', 'blindSessions', 'blindSamples'];
 
 export function normalizeState(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Atelier state must be a JSON object.');
@@ -286,6 +287,7 @@ export function validateState(state) {
   allIds(normalized.journalEntries, 'journal entry'); allIds(normalized.experiments, 'experiment'); allIds(normalized.revisions, 'revision'); allIds(normalized.batches, 'batch'); allIds(normalized.evaluations, 'evaluation'); allIds(normalized.stockMovements, 'stock movement');
   const equipmentIds = allIds(normalized.equipment, 'equipment'); allIds(normalized.verificationEvents, 'verification event'); allIds(normalized.maintenanceEvents, 'maintenance event'); allIds(normalized.measurements, 'measurement');
   const purchaseIds = allIds(normalized.purchases, 'purchase'); allIds(normalized.purchaseLineItems, 'purchase line item');
+  const blindSessionIds = allIds(normalized.blindSessions, 'blind session'); const blindSampleIds = allIds(normalized.blindSamples, 'blind sample');
   const materialIds = allIds(normalized.materials, 'material');
   const lotIds = new Set();
   for (const material of normalized.materials) {
@@ -364,6 +366,45 @@ export function validateState(state) {
     const total = subtotal - (purchase.discount || 0) + (purchase.tax || 0) + (purchase.shipping || 0);
     if (total < -0.000001) throw new Error(`Purchase ${purchase.id} total cannot be negative.`);
   }
+  const samplesBySession = new Map();
+  for (const session of normalized.blindSessions) {
+    requireText(session.name, `Blind session ${session.id} name`); requireText(session.purpose, `Blind session ${session.id} purpose`); timestamp(requireText(session.sessionDate, `Blind session ${session.id} date`), `Blind session ${session.id} date`);
+    if (!blindSessionStatuses.includes(session.status)) throw new Error(`Blind session ${session.id} has an invalid status.`);
+    if (!Array.isArray(session.sampleIds) || session.sampleIds.length < 2 || new Set(session.sampleIds).size !== session.sampleIds.length) throw new Error(`Blind session ${session.id} must contain at least two unique samples.`);
+    if (session.randomizedAt) timestamp(session.randomizedAt, `Blind session ${session.id} randomizedAt`);
+    if (session.lockedAt) timestamp(session.lockedAt, `Blind session ${session.id} lockedAt`);
+    if (session.unblindedAt) timestamp(session.unblindedAt, `Blind session ${session.id} unblindedAt`);
+    if (session.status !== 'draft' && !session.randomizedAt) throw new Error(`Blind session ${session.id} is missing randomizedAt.`);
+    if (['locked', 'unblinded'].includes(session.status) && !session.lockedAt) throw new Error(`Blind session ${session.id} is missing lockedAt.`);
+    if (session.status === 'unblinded' && !session.unblindedAt) throw new Error(`Blind session ${session.id} is missing unblindedAt.`);
+    samplesBySession.set(session.id, new Set(session.sampleIds));
+  }
+  const codesBySession = new Map(); const positionsBySession = new Map();
+  for (const sample of normalized.blindSamples) {
+    if (!blindSessionIds.has(sample.sessionId)) throw new Error(`Blind sample ${sample.id} references an unknown session.`);
+    const batch = normalized.batches.find(item => item.id === sample.batchId); const revision = normalized.revisions.find(item => item.id === sample.revisionId); const experiment = normalized.experiments.find(item => item.id === sample.experimentId);
+    if (!batch || !experiment || !revision) throw new Error(`Blind sample ${sample.id} references missing batch, experiment, or revision.`);
+    if (batch.experimentId !== sample.experimentId || batch.formulaRevisionId !== sample.revisionId || revision.experimentId !== sample.experimentId) throw new Error(`Blind sample ${sample.id} has mismatched batch and revision links.`);
+    if (!samplesBySession.get(sample.sessionId)?.has(sample.id)) throw new Error(`Blind session ${sample.sessionId} is missing sample ${sample.id}.`);
+    const session = normalized.blindSessions.find(item => item.id === sample.sessionId);
+    if (sample.blindCode !== undefined && sample.blindCode !== null && sample.blindCode !== '') {
+      if (!/^BT-[A-Z0-9]{6,}$/.test(sample.blindCode)) throw new Error(`Blind sample ${sample.id} code is not opaque and valid.`);
+      const codes = codesBySession.get(sample.sessionId) || new Set(); if (codes.has(sample.blindCode)) throw new Error(`Blind session ${sample.sessionId} contains duplicate blind codes.`); codes.add(sample.blindCode); codesBySession.set(sample.sessionId, codes);
+    }
+    if (sample.position !== undefined && sample.position !== null) { if (!Number.isInteger(sample.position) || sample.position < 1 || sample.position > session.sampleIds.length) throw new Error(`Blind sample ${sample.id} position is invalid.`); const positions = positionsBySession.get(sample.sessionId) || new Set(); if (positions.has(sample.position)) throw new Error(`Blind session ${sample.sessionId} contains duplicate sample positions.`); positions.add(sample.position); positionsBySession.set(sample.sessionId, positions); }
+    if (session.status !== 'draft' && (!sample.blindCode || sample.position === undefined || sample.position === null)) throw new Error(`Blind sample ${sample.id} is incomplete for a randomized session.`);
+  }
+  for (const session of normalized.blindSessions) for (const sampleId of session.sampleIds) if (!blindSampleIds.has(sampleId)) throw new Error(`Blind session ${session.id} references an unknown sample.`);
+  for (const evaluation of normalized.evaluations) {
+    if (!evaluation.blindSessionId && !evaluation.blindSampleId && !evaluation.blindCode) continue;
+    if (!evaluation.blindSessionId || !evaluation.blindSampleId || !evaluation.blindCode) throw new Error(`Blind evaluation ${evaluation.id} must preserve session, sample, and code links.`);
+    const session = normalized.blindSessions.find(item => item.id === evaluation.blindSessionId); const sample = normalized.blindSamples.find(item => item.id === evaluation.blindSampleId);
+    if (!session || !sample || sample.sessionId !== session.id || sample.blindCode !== evaluation.blindCode) throw new Error(`Blind evaluation ${evaluation.id} has invalid session/sample mapping.`);
+    if (evaluation.batchId !== sample.batchId || evaluation.revisionId !== sample.revisionId || evaluation.experimentId !== sample.experimentId) throw new Error(`Blind evaluation ${evaluation.id} does not match its assigned batch and revision.`);
+    if (evaluation.blindLockedAt) timestamp(evaluation.blindLockedAt, `Blind evaluation ${evaluation.id} lock time`);
+    if (['locked', 'unblinded'].includes(session.status) && evaluation.blindLockedAt !== session.lockedAt) throw new Error(`Blind evaluation ${evaluation.id} is not finalized with its locked session.`);
+  }
+  for (const session of normalized.blindSessions) if (['locked', 'unblinded'].includes(session.status)) for (const sampleId of session.sampleIds) if (!normalized.evaluations.some(item => item.blindSessionId === session.id && item.blindSampleId === sampleId)) throw new Error(`Blind session ${session.id} is finalized with an incomplete sample.`);
   for (const material of normalized.materials) for (const lot of material.lots || []) for (const lineId of lot.purchaseLineItemIds) {
     const line = normalized.purchaseLineItems.find(item => item.id === lineId);
     if (!line || line.materialLotId !== lot.id || line.materialId !== material.id) throw new Error(`Lot ${lot.id} has an invalid purchase line link.`);
@@ -559,6 +600,80 @@ export function calculateBatchCost(state, batchId) {
     rows.push(row); totalsByCurrency[purchase.currency] = (totalsByCurrency[purchase.currency] || 0) + cost;
   }
   const currencies = Object.keys(totalsByCurrency); return { batchId: batch.id, rows, costable: rows.filter(row => row.costable), uncosted, complete: uncosted.length === 0, totalsByCurrency, total: currencies.length === 1 && uncosted.length === 0 ? totalsByCurrency[currencies[0]] : null, currencies };
+}
+
+function findBlindSession(state, sessionId) {
+  const session = state.blindSessions.find(item => item.id === sessionId);
+  if (!session) throw new Error(`Blind session "${sessionId}" was not found.`);
+  return session;
+}
+
+function randomValue(random) {
+  const value = random();
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value >= 1) throw new Error('Random source must return values in [0, 1).');
+  return value;
+}
+
+export function shuffleBlindSamples(samples, random = Math.random) {
+  if (!Array.isArray(samples)) throw new Error('Blind samples must be an array.');
+  const result = samples.slice();
+  for (let index = result.length - 1; index > 0; index -= 1) { const swapIndex = Math.floor(randomValue(random) * (index + 1)); [result[index], result[swapIndex]] = [result[swapIndex], result[index]]; }
+  return result;
+}
+
+function blindCode(random, used) {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    let code = 'BT-'; for (let index = 0; index < 6; index += 1) code += alphabet[Math.floor(randomValue(random) * alphabet.length)];
+    if (!used.has(code)) return code;
+  }
+  let suffix = used.size + 1; let fallback = `BT-${String(suffix).padStart(6, '0')}`; while (used.has(fallback)) fallback = `BT-${String(++suffix).padStart(6, '0')}`; return fallback;
+}
+
+export function createBlindSession(state, input) {
+  const normalized = normalizeState(state); const candidates = Array.isArray(input.batchIds) ? input.batchIds : Array.isArray(input.candidates) ? input.candidates.map(item => item.batchId || item.id) : [];
+  if (candidates.length < 2 || new Set(candidates).size !== candidates.length) throw new Error('A blind session needs at least two unique physical batches.');
+  const sessionId = input.id || id('blind-session');
+  const samples = candidates.map(batchId => { const batch = normalized.batches.find(item => item.id === batchId); if (!batch) throw new Error(`Blind session references an unknown batch ${batchId}.`); const experiment = normalized.experiments.find(item => item.id === batch.experimentId); const revision = normalized.revisions.find(item => item.id === batch.formulaRevisionId); if (!experiment || !revision || revision.experimentId !== experiment.id) throw new Error(`Batch ${batchId} has an invalid experiment or formula revision link.`); return { id: id('blind-sample'), sessionId, batchId: batch.id, experimentId: experiment.id, revisionId: revision.id }; });
+  const session = { id: sessionId, name: requireText(input.name, 'Blind session name'), purpose: requireText(input.purpose, 'Blind session purpose'), sessionDate: timestamp(requireText(input.sessionDate, 'Blind session date'), 'Blind session date'), protocol: input.protocol || '', evaluatorLabel: input.evaluatorLabel || '', conditions: input.conditions || '', notes: input.notes || '', status: 'draft', sampleIds: samples.map(sample => sample.id), createdAt: now(), updatedAt: now() };
+  return validateState({ ...normalized, blindSessions: [session, ...normalized.blindSessions], blindSamples: [...samples, ...normalized.blindSamples] });
+}
+
+export function randomizeBlindSession(state, sessionId, random = Math.random) {
+  const normalized = normalizeState(state); const session = findBlindSession(normalized, sessionId); if (session.status !== 'draft') throw new Error('Only a draft blind session can be randomized.');
+  const samples = session.sampleIds.map(sampleId => normalized.blindSamples.find(item => item.id === sampleId)); const order = shuffleBlindSamples(samples, random); const used = new Set(); const randomizedAt = now();
+  const updatedSamples = normalized.blindSamples.map(sample => { const position = order.findIndex(item => item.id === sample.id); if (position < 0) return sample; const code = blindCode(random, used); used.add(code); return { ...sample, position: position + 1, blindCode: code, randomizedAt }; });
+  const updatedSession = { ...session, status: 'randomized', randomizedAt, updatedAt: now() };
+  return validateState({ ...normalized, blindSessions: normalized.blindSessions.map(item => item.id === sessionId ? updatedSession : item), blindSamples: updatedSamples });
+}
+
+export function startBlindSession(state, sessionId) {
+  const normalized = normalizeState(state); const session = findBlindSession(normalized, sessionId); if (!['randomized', 'in-progress'].includes(session.status)) throw new Error('A session must be randomized before evaluator entry begins.');
+  return validateState({ ...normalized, blindSessions: normalized.blindSessions.map(item => item.id === sessionId ? { ...item, status: 'in-progress', updatedAt: now() } : item) });
+}
+
+export function recordBlindObservation(state, sessionId, sampleId, input) {
+  const normalized = normalizeState(state); const session = findBlindSession(normalized, sessionId); const sample = normalized.blindSamples.find(item => item.id === sampleId);
+  if (!sample || sample.sessionId !== sessionId) throw new Error('Blind sample does not belong to this session.');
+  if (!['randomized', 'in-progress'].includes(session.status)) throw new Error('Blind observations cannot be changed after the session is locked.');
+  const next = recordSensoryEvaluation(normalized, sample.experimentId, { ...input, id: input.id || id('blind-evaluation'), batchId: sample.batchId, revisionId: sample.revisionId, evaluatedAt: input.evaluatedAt || now() });
+  const evaluationId = input.id || next.evaluations[0]?.id;
+  const evaluations = next.evaluations.map(item => item.id === evaluationId ? { ...item, blindSessionId: sessionId, blindSampleId: sampleId, blindCode: sample.blindCode } : item);
+  const nextSession = session.status === 'randomized' ? { ...session, status: 'in-progress', updatedAt: now() } : session;
+  return validateState({ ...next, evaluations, blindSessions: next.blindSessions.map(item => item.id === sessionId ? nextSession : item) });
+}
+
+export function lockBlindSession(state, sessionId) {
+  const normalized = normalizeState(state); const session = findBlindSession(normalized, sessionId); if (!['randomized', 'in-progress'].includes(session.status)) throw new Error('Only an in-progress blind session can be locked.');
+  const incomplete = session.sampleIds.map(sampleId => normalized.blindSamples.find(item => item.id === sampleId)).filter(sample => !normalized.evaluations.some(item => item.blindSessionId === sessionId && item.blindSampleId === sample.id));
+  if (incomplete.length) throw new Error(`Cannot lock session; incomplete samples: ${incomplete.map(sample => sample.blindCode).join(', ')}.`);
+  const lockedAt = now(); const evaluations = normalized.evaluations.map(item => item.blindSessionId === sessionId ? { ...item, blindLockedAt: lockedAt } : item);
+  return validateState({ ...normalized, evaluations, blindSessions: normalized.blindSessions.map(item => item.id === sessionId ? { ...item, status: 'locked', lockedAt, updatedAt: now() } : item) });
+}
+
+export function unblindSession(state, sessionId) {
+  const normalized = normalizeState(state); const session = findBlindSession(normalized, sessionId); if (session.status !== 'locked') throw new Error('Only a locked blind session can be unblinded.');
+  return validateState({ ...normalized, blindSessions: normalized.blindSessions.map(item => item.id === sessionId ? { ...item, status: 'unblinded', unblindedAt: now(), updatedAt: now() } : item) });
 }
 
 function findEquipment(state, equipmentId) {
