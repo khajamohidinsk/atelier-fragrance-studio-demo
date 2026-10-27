@@ -106,13 +106,26 @@ test('retired methods hide lifecycle actions while preserving versions and execu
   await page.locator('#method-execution-form button[type="submit"]').click();
   await page.locator('#record-dialog > .dialog-close').click();
   await page.locator('[data-method-id]').getByRole('button', { name: /Open method/ }).click();
+  await page.getByRole('button', { name: /Publish draft/ }).click();
   await page.getByRole('button', { name: /Retire method/ }).click();
 
   await expect(page.locator('[data-method-id]').getByRole('button', { name: /Execute v/ })).toHaveCount(0);
   await expect(page.locator('#record-dialog-content')).toContainText('Version 1');
+  await expect(page.locator('#record-dialog-content')).toContainText('Version 2');
   await expect(page.locator('#record-dialog-content')).toContainText('retired');
   await expect(page.locator('#record-dialog-content').getByRole('button', { name: /Edit draft|Publish draft|Create new draft from latest|Execute latest version|Execute version/ })).toHaveCount(0);
   await page.getByRole('button', { name: /Open report/ }).click();
   await expect(page.locator('#record-dialog-content')).toContainText('EXECUTION REPORT');
+  await expect(page.locator('#record-dialog-content')).toContainText('version 1');
+  await page.reload();
+  await page.getByRole('button', { name: /Methods & SOPs/ }).click();
+  await page.locator('#method-status-filter').selectOption('retired');
+  await page.getByRole('button', { name: 'Open method', exact: true }).click();
+  for (const action of ['edit-method', 'publish-method', 'clone-method', 'new-method-execution', 'new-method-execution-version']) {
+    await expect(page.locator(`[data-action="${action}"]`)).toHaveCount(0);
+  }
+  await expect(page.locator('#record-dialog-content')).toContainText('Version 1');
+  await expect(page.locator('#record-dialog-content')).toContainText('Version 2');
+  await page.getByRole('button', { name: 'Open report', exact: true }).click();
   await expect(page.locator('#record-dialog-content')).toContainText('version 1');
 });
